@@ -869,7 +869,10 @@ class ProjectWindow(QMainWindow):
 
     def change_theme(self, new_theme):
         self.current_theme = new_theme
-        ThemeManager.apply_to_app(new_theme)
+        # Apply theme to this window only, don't emit global signal to avoid recursion
+        stylesheet = ThemeManager.get_stylesheet(new_theme)
+        self.setStyleSheet(stylesheet)
+        ThemeManager.clear_icon_cache()
         self.update_icons()
 
     def on_editor_text_changed(self):

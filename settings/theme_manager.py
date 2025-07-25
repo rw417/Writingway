@@ -1,25 +1,307 @@
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtWidgets import QApplication, QProxyStyle, QStyle
+from PyQt5.QtCore import Qt, QSize, QObject, pyqtSignal
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon, QColor, QPixmap, QPainter
 from PyQt5.QtSvg import QSvgRenderer
 from .settings_manager import WWSettingsManager
 
 
-class ThemeManager:
+class ThemeManager(QObject):
     """
-    theme manager for Writingway with contemporary design patterns.
+    A simple manager for predefined themes.
 
-    Provides:
-    - CSS styling with glassmorphism and neumorphism effects
-    - Beautiful themes inspired by Notion, Obsidian, and contemporary writing apps
-    - Smooth animations and hover effects
-    - Dark/light mode switching
-    - typography and spacing
+    Provides methods to:
+      - List available themes.
+      - Retrieve a stylesheet for a given theme.
+      - Apply a theme to a specific widget or the entire application.
+      - Generate tinted SVG icons using QSvgRenderer.
     """
+    
+    # Signal emitted when theme changes
+    themeChanged = pyqtSignal(str)
+    
+    _instance = None
     _icon_cache = {}  # Cache: (file_path, tint_color) -> QIcon
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ThemeManager, cls).__new__(cls)
+            # Initialize the QObject part
+            cls._instance.__init_signals()
+        return cls._instance
+    
+    def __init_signals(self):
+        # This ensures the QObject is properly initialized
+        super().__init__()
 
     # CSS themes with glassmorphism and neumorphism effects
     THEMES = {
+                "Standard": """
+            QTreeWidgetItem[is-category="true"] {
+                background-color: #e0e0e0; /* Fallback; will be overridden programmatically */
+                font-weight: bold;
+            }        
+        """,
+        "Night Mode": """
+            /* Night Mode styling */
+            QWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                font-family: Arial, sans-serif;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #424242;
+            font-weight: bold;
+            }
+            QLineEdit, QTextEdit {
+                background-color: #3c3f41;
+                color: #ffffff;
+                border: 1px solid #555;
+            }
+            QPushButton {
+                background-color: #333;
+                color: #ffffff;
+                border: 2px solid #ffffff;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #444;
+            }
+            QTreeView, QTreeWidget {
+                background-color: #3c3f41;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #3c3f41;
+                color: #ffffff;
+                padding: 4px;
+            }
+            QTabWidget::pane {
+                border: none;
+            }
+            QTabBar::tab {
+                background: #3c3f41;
+                color: #ffffff;
+                padding: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #555;
+            }
+            QToolBar {
+                background-color: #2b2b2b; /* Match QWidget background */
+                border: none;
+                padding: 2px;
+            }
+            QToolBar::separator {
+                background: #555;
+                width: 1px;
+            }
+            QToolButton {
+                background-color: #2b2b2b; /* Match toolbar background */
+                border: none;
+                padding: 4px;
+            }
+            QToolButton:hover {
+                background-color: #444; /* Match QPushButton hover */
+            }
+            QToolButton:pressed {
+                background-color: #555;
+            }
+        """,
+        "Solarized Dark": """
+            QWidget {
+                background-color: #002b36;
+                color: #839496;
+                font-family: Arial, sans-serif;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #073642;
+            font-weight: bold;
+        }
+            QLineEdit, QTextEdit {
+                background-color: #073642;
+                color: #93a1a1;
+                border: 1px solid #586e75;
+            }
+            QPushButton {
+                background-color: #586e75;
+                color: #fdf6e3;
+                border: 2px solid #fdf6e3;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #657b83;
+            }
+            QTreeView, QTreeWidget {
+                background-color: #073642;
+                color: #839496;
+            }
+            QHeaderView::section {
+                background-color: #073642;
+                color: #93a1a1;
+                padding: 4px;
+            }
+            QTabBar::tab {
+                background: #073642;
+                color: #839496;
+                padding: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #586e75;
+            }
+            QToolBar {
+                background-color: #002b36; /* Match QWidget background */
+                border: none;
+                padding: 2px;
+            }
+            QToolBar::separator {
+                background: #555;
+                width: 1px;
+            }
+            QToolButton {
+                background-color: #002b36; /* Match toolbar background */
+                border: none;
+                padding: 4px;
+            }
+            QToolButton:hover {
+                background-color: #657b83; /* Match QPushButton hover */
+            }
+            QToolButton:pressed {
+                background-color: #586e75;
+            }
+        """,
+        "Paper White": """
+            QWidget {
+                background-color: #f9f9f9;
+                color: #333;
+                font-family: "Georgia", serif;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #f7f7f5;
+            font-weight: bold;
+            }
+
+            QLineEdit, QTextEdit {
+                background-color: #ffffff;
+                color: #000;
+                border: 1px solid #ccc;
+            }
+            QPushButton {
+                background-color: #f1f1f1;
+                color: #333;
+                border: 2px solid #333;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e1e1e1;
+            }
+            QTreeView, QTreeWidget {
+                background-color: #f9f9f9;
+                color: #333;
+            }
+            QHeaderView::section {
+                background-color: #e1e1e1;
+                color: #333;
+                padding: 4px;
+            }
+            QTabBar::tab {
+                background: #f1f1f1;
+                color: #333;
+                padding: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #ddd;
+            }
+        """,
+        "Ocean Breeze": """
+            QWidget {
+                background-color: #e0f7fa;
+                color: #0277bd;
+                font-family: "Verdana", sans-serif;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #d6f5f9;
+            font-weight: bold;
+            } 
+            QLineEdit, QTextEdit {
+                background-color: #b2ebf2;
+                color: #004d40;
+                border: 1px solid #0288d1;
+            }
+            QPushButton {
+                background-color: #4dd0e1;
+                color: #004d40;
+                border: 2px solid #004d40;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #26c6da;
+            }
+            QTreeView, QTreeWidget {
+                background-color: #b2ebf2;
+                color: #004d40;
+            }
+            QHeaderView::section {
+                background-color: #4dd0e1;
+                color: #004d40;
+                padding: 4px;
+            }
+            QTabBar::tab {
+                background: #b2ebf2;
+                color: #0277bd;
+                padding: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #4dd0e1;
+            }
+        """,
+        "Sepia": """
+            QWidget {
+                background-color: #f4ecd8;
+                color: #5a4630;
+                font-family: "Times New Roman", serif;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #f9f2e5;
+            font-weight: bold;
+        }
+            QLineEdit, QTextEdit {
+                background-color: #f8f1e4;
+                color: #3a2c1f;
+                border: 1px solid #a67c52;
+            }
+            QPushButton {
+                background-color: #d8c3a5;
+                color: #3a2c1f;
+                border: 2px solid #3a2c1f;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c4a484;
+            }
+            QTreeView, QTreeWidget {
+                background-color: #f4ecd8;
+                color: #5a4630;
+            }
+            QHeaderView::section {
+                background-color: #d8c3a5;
+                color: #5a4630;
+                padding: 4px;
+            }
+            QTabBar::tab {
+                background: #d8c3a5;
+                color: #5a4630;
+                padding: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #c4a484;
+            }
+        """,
+        
         "Notion Light": """
             /* Enhanced Notion Light Theme with Accessibility Features */
             QWidget {
@@ -28,6 +310,10 @@ class ThemeManager:
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                 font-size: 14px;
                 line-height: 1.5;
+            }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #f7f7f5;
+            font-weight: bold;
             }
 
             /* Main window styling */
@@ -123,16 +409,6 @@ class ThemeManager:
             QTreeView::item:selected, QTreeWidget::item:selected {
                 background-color: #e7f5ff;
                 color: #0066cc;
-            }
-
-            QTreeWidgetItem[is-category="true"] {
-                background-color: #f7f7f5;
-                font-weight: 600;
-                font-size: 13px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                padding: 12px 8px;
-                border-bottom: 1px solid #e0e0e0;
             }
 
             /* Headers */
@@ -278,6 +554,10 @@ class ThemeManager:
                 font-size: 14px;
                 line-height: 1.5;
             }
+            QTreeWidgetItem[is-category="true"] {
+            background-color: #f5e8d0;
+            font-weight: bold;
+            }
 
             /* Main window styling */
             QMainWindow {
@@ -372,16 +652,6 @@ class ThemeManager:
             QTreeView::item:selected, QTreeWidget::item:selected {
                 background-color: #e8d0b8;
                 color: #8b5e3c;
-            }
-
-            QTreeWidgetItem[is-category="true"] {
-                background-color: #f7f3ef;
-                font-weight: 600;
-                font-size: 13px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                padding: 12px 8px;
-                border-bottom: 1px solid #e8e0d8;
             }
 
             /* Headers */
@@ -517,514 +787,23 @@ class ThemeManager:
                 color: #8b5e3c;
             }
         """,
-                
-            "Warm Ivory": """
-            /* Warm Ivory — soft paper & soft sand */
-            QWidget {
-                background-color: #fffdf9;
-                color: #5a4d41;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                font-size: 14px;
-                line-height: 1.5;
-            }
-
-            /* Main window styling */
-            QMainWindow {
-                background-color: #fffdf9;
-            }
-
-            /* Text editing areas */
-            QTextEdit, QPlainTextEdit {
-                background-color: #fffdf9;
-                color: #5a4d41;
-                border: 1px solid #e6dfd4;
-                border-radius: 8px;
-                padding: 12px;
-                font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
-                font-size: 15px;
-                line-height: 1.6;
-                selection-background-color: #f5e8d0;
-                selection-color: #8b5e3c;
-            }
-
-            QTextEdit:focus {
-                border: 2px solid #d4a76a;
-                outline: none;
-            }
-
-            /* Input fields */
-            QLineEdit {
-                background-color: #f8f4ef;
-                color: #5a4d41;
-                border: 1px solid #e6dfd4;
-                border-radius: 6px;
-                padding: 8px 12px;
-                font-size: 14px;
-            }
-
-            QLineEdit:focus {
-                border: 2px solid #d4a76a;
-                background-color: #fffdf9;
-                outline: none;
-            }
-
-            /* Buttons */
-            QPushButton {
-                background-color: #f8f4ef;
-                color: #5a4d41;
-                border: 1px solid #e6dfd4;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 14px;
-                font-weight: 500;
-                widget-animation-duration: 200;
-            }
-
-            QPushButton:hover {
-                background-color: #f0e8dd;
-                border-color: #d6c7b8;
-            }
-
-            QPushButton:pressed {
-                background-color: #e6dfd4;
-            }
-
-            QPushButton[primary="true"] {
-                background-color: #d4a76a;
-                color: white;
-                border: none;
-            }
-
-            QPushButton[primary="true"]:hover {
-                background-color: #c4965a;
-            }
-
-            /* Tree views */
-            QTreeView, QTreeWidget {
-                background-color: #fffdf9;
-                color: #5a4d41;
-                border: 1px solid #e6dfd4;
-                border-radius: 8px;
-                alternate-background-color: #f8f4ef;
-                outline: 0;
-            }
-
-            QTreeView::item, QTreeWidget::item {
-                padding: 8px;
-                border-radius: 4px;
-            }
-
-            QTreeView::item:hover, QTreeWidget::item:hover {
-                background-color: #f0e8dd;
-            }
-
-            QTreeView::item:selected, QTreeWidget::item:selected {
-                background-color: #e8d9c0;
-                color: #8b5e3c;
-            }
-
-            QTreeWidgetItem[is-category="true"] {
-                background-color: #f8f4ef;
-                font-weight: 600;
-                font-size: 13px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                padding: 12px 8px;
-                border-bottom: 1px solid #e6dfd4;
-            }
-
-            /* Headers */
-            QHeaderView::section {
-                background-color: #f8f4ef;
-                color: #5a4d41;
-                padding: 12px 8px;
-                border: none;
-                border-bottom: 1px solid #e6dfd4;
-                font-weight: 600;
-                font-size: 13px;
-            }
-
-            /* Tabs */
-            QTabWidget::pane {
-                border: 1px solid #e6dfd4;
-                border-radius: 8px;
-                background-color: #fffdf9;
-            }
-
-            QTabBar::tab {
-                background-color: #f8f4ef;
-                color: #8b8b8b;
-                padding: 12px 20px;
-                margin-right: 2px;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                font-size: 14px;
-                font-weight: 500;
-            }
-
-            QTabBar::tab:hover {
-                background-color: #f0e8dd;
-                color: #5a4d41;
-            }
-
-            QTabBar::tab:selected {
-                background-color: #fffdf9;
-                color: #5a4d41;
-                border: 1px solid #e6dfd4;
-                border-bottom: 2px solid #d4a76a;
-            }
-
-            /* Toolbars */
-            QToolBar {
-                background-color: #fffdf9;
-                border: none;
-                border-bottom: 1px solid #e6dfd4;
-                padding: 8px;
-                spacing: 8px;
-            }
-
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 6px;
-                padding: 8px;
-                font-size: 13px;
-            }
-
-            QToolButton:hover {
-                background-color: #f0e8dd;
-            }
-
-            QToolButton:pressed {
-                background-color: #e8d9c0;
-            }
-
-            /* Scrollbars */
-            QScrollBar:vertical {
-                background-color: #f8f4ef;
-                width: 12px;
-                border-radius: 6px;
-            }
-
-            QScrollBar::handle:vertical {
-                background-color: #d4c0a8;
-                border-radius: 6px;
-                min-height: 20px;
-            }
-
-            QScrollBar::handle:vertical:hover {
-                background-color: #c0a58a;
-            }
-
-            QScrollBar:horizontal {
-                background-color: #f8f4ef;
-                height: 12px;
-                border-radius: 6px;
-            }
-
-            QScrollBar::handle:horizontal {
-                background-color: #d4c0a8;
-                border-radius: 6px;
-                min-width: 20px;
-            }
-
-            QScrollBar::handle:horizontal:hover {
-                background-color: #c0a58a;
-            }
-
-            /* Menus */
-            QMenuBar {
-                background-color: #fffdf9;
-                border-bottom: 1px solid #e6dfd4;
-                padding: 4px;
-            }
-
-            QMenuBar::item {
-                background-color: transparent;
-                padding: 8px 12px;
-                border-radius: 4px;
-            }
-
-            QMenuBar::item:selected {
-                background-color: #f0e8dd;
-            }
-
-            QMenu {
-                background-color: #fffdf9;
-                border: 1px solid #e6dfd4;
-                border-radius: 8px;
-                padding: 4px;
-            }
-
-            QMenu::item {
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-
-            QMenu::item:selected {
-                background-color: #e8d9c0;
-                color: #8b5e3c;
-            }
-        """,
-    
-        "Warm Blush": """
-        /* Warm Blush — rosy parchment & soft terracotta */
-        QWidget {
-            background-color: #fff8f6;
-            color: #654a4a;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            font-size: 14px;
-            line-height: 1.5;
-        }
-
-        QMainWindow {
-            background-color: #fff8f6;
-        }
-
-        QTextEdit, QPlainTextEdit {
-            background-color: #fff8f6;
-            color: #654a4a;
-            border: 1px solid #f3ddd9;
-            border-radius: 8px;
-            padding: 12px;
-            font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 15px;
-            line-height: 1.6;
-            selection-background-color: #ffe9e0;
-            selection-color: #b95c4a;
-        }
-
-        QTextEdit:focus {
-            border: 2px solid #e79b83;
-            outline: none;
-        }
-
-        QLineEdit {
-            background-color: #fdf2f0;
-            color: #654a4a;
-            border: 1px solid #f3ddd9;
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 14px;
-        }
-
-        QLineEdit:focus {
-            border: 2px solid #e79b83;
-            background-color: #fff8f6;
-            outline: none;
-        }
-
-        QPushButton {
-            background-color: #fdf2f0;
-            color: #654a4a;
-            border: 1px solid #f3ddd9;
-            border-radius: 6px;
-            padding: 8px 16px;
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.2s ease;
-        }
-
-        QPushButton:hover {
-            background-color: #fae8e4;
-            border-color: #f3ddd9;
-        }
-
-        QPushButton:pressed {
-            background-color: #f3ddd9;
-        }
-
-        QPushButton[primary="true"] {
-            background-color: #e79b83;
-            color: white;
-            border: none;
-        }
-
-        QPushButton[primary="true"]:hover {
-            background-color: #d88a73;
-        }
-
-        /* Tree views */
-        QTreeView, QTreeWidget {
-            background-color: #fff8f6;
-            color: #654a4a;
-            border: 1px solid #f3ddd9;
-            border-radius: 8px;
-            alternate-background-color: #fdf2f0;
-            outline: 0;
-        }
-
-        QTreeView::item, QTreeWidget::item {
-            padding: 8px;
-            border-radius: 4px;
-        }
-
-        QTreeView::item:hover, QTreeWidget::item:hover {
-            background-color: #fae8e4;
-        }
-
-        QTreeView::item:selected, QTreeWidget::item:selected {
-            background-color: #ffd1c4;
-            color: #b95c4a;
-        }
-
-        QTreeWidgetItem[is-category="true"] {
-            background-color: #fdf2f0;
-            font-weight: 600;
-            font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 12px 8px;
-            border-bottom: 1px solid #f3ddd9;
-        }
-
-        /* Headers */
-        QHeaderView::section {
-            background-color: #fdf2f0;
-            color: #654a4a;
-            padding: 12px 8px;
-            border: none;
-            border-bottom: 1px solid #f3ddd9;
-            font-weight: 600;
-            font-size: 13px;
-        }
-
-        /* Tabs */
-        QTabWidget::pane {
-            border: 1px solid #f3ddd9;
-            border-radius: 8px;
-            background-color: #fff8f6;
-        }
-
-        QTabBar::tab {
-            background-color: #fdf2f0;
-            color: #8b8b8b;
-            padding: 12px 20px;
-            margin-right: 2px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-        }
-
-        QTabBar::tab:hover {
-            background-color: #fae8e4;
-            color: #654a4a;
-        }
-
-        QTabBar::tab:selected {
-            background-color: #fff8f6;
-            color: #654a4a;
-            border: 1px solid #f3ddd9;
-            border-bottom: 2px solid #e79b83;
-        }
-
-        /* Toolbars */
-        QToolBar {
-            background-color: #fff8f6;
-            border: none;
-            border-bottom: 1px solid #f3ddd9;
-            padding: 8px;
-            spacing: 8px;
-        }
-
-        QToolButton {
-            background-color: transparent;
-            border: none;
-            border-radius: 6px;
-            padding: 8px;
-            font-size: 13px;
-        }
-
-        QToolButton:hover {
-            background-color: #fae8e4;
-        }
-
-        QToolButton:pressed {
-            background-color: #ffd1c4;
-        }
-
-        /* Scrollbars */
-        QScrollBar:vertical {
-            background-color: #fdf2f0;
-            width: 12px;
-            border-radius: 6px;
-        }
-
-        QScrollBar::handle:vertical {
-            background-color: #e7b5a8;
-            border-radius: 6px;
-            min-height: 20px;
-        }
-
-        QScrollBar::handle:vertical:hover {
-            background-color: #d49d8f;
-        }
-
-        QScrollBar:horizontal {
-            background-color: #fdf2f0;
-            height: 12px;
-            border-radius: 6px;
-        }
-
-        QScrollBar::handle:horizontal {
-            background-color: #e7b5a8;
-            border-radius: 6px;
-            min-width: 20px;
-        }
-
-        QScrollBar::handle:horizontal:hover {
-            background-color: #d49d8f;
-        }
-
-        /* Menus */
-        QMenuBar {
-            background-color: #fff8f6;
-            border-bottom: 1px solid #f3ddd9;
-            padding: 4px;
-        }
-
-        QMenuBar::item {
-            background-color: transparent;
-            padding: 8px 12px;
-            border-radius: 4px;
-        }
-
-        QMenuBar::item:selected {
-            background-color: #fae8e4;
-        }
-
-        QMenu {
-            background-color: #fff8f6;
-            border: 1px solid #f3ddd9;
-            border-radius: 8px;
-            padding: 4px;
-        }
-
-        QMenu::item {
-            padding: 8px 16px;
-            border-radius: 4px;
-        }
-
-        QMenu::item:selected {
-            background-color: #ffd1c4;
-            color: #b95c4a;
-        }
-    """
     }
 
     ICON_TINTS = {
-        "Notion Light": "#37352f",
-        "Glassmorphism Light": "#2c3e50",
-        "Glassmorphism Dark": "#e0e0e0",
-        "Minimal Light": "#1a1a1a",
-        "Minimal Dark": "#e6e6e6",
-        "Warm Cream":   "#4a4239",
-        "Warm Ivory":  "#5a4d41",
-        "Warm Blush":  "#654a4a",
+    # Light themes → dark icons
+    "Standard":      "#333333",
+    "Paper White":   "#333333",
+    "Ocean Breeze":  "#004d40",
+    "Sepia":         "#3a2c1f",
+    "Notion Light":  "#37352f",
+    "Warm Cream":    "#4a4239",
+
+    # Dark themes → light icons
+    "Night Mode":    "#ffffff",
+    "Solarized Dark":"#fdf6e3",
     }
 
-    _current_theme = "Notion Light"
+    _current_theme = "default"
 
     @classmethod
     def list_themes(cls):
@@ -1047,9 +826,12 @@ class ThemeManager:
 
         stylesheet = cls.get_stylesheet(theme_name)
         app = QApplication.instance()
-        if app:
+        if app and hasattr(app, 'setStyleSheet'):
             app.setStyleSheet(stylesheet)
             cls.clear_icon_cache()
+            # Emit theme change signal from the instance
+            if cls._instance:
+                cls._instance.themeChanged.emit(theme_name)
         else:
             raise RuntimeError(
                 "No QApplication instance found. Create one before applying a theme.")
@@ -1115,25 +897,72 @@ class ThemeManager:
 
     @classmethod
     def get_category_background_color(cls):
-        """Get a theme-appropriate background color for category rows."""
-        if not WWSettingsManager.get_appearance_settings().get("enable_category_background", True):
+        """
+        Return a color for category row background based on the current theme.
+        """
+        settings = WWSettingsManager.get_appearance_settings()
+        if not settings.get("enable_category_background", True):
             return QColor(Qt.GlobalColor.transparent)
-            
-        theme_name = cls._current_theme
-        stylesheet = cls.get_stylesheet(theme_name)
-        
-        # Default colors based on theme type
-        if "Light" in theme_name or "light" in theme_name.lower():
-            default_color = QColor("#f7f7f5")
-        else:
-            default_color = QColor("#2d2d2d")
-            
-        return default_color
+
+        theme = cls._current_theme
+        colors = {
+            "Standard": QColor("#e0e0e0"),  # Light grey
+            "Night Mode": QColor("#424242"),  # Charcoal
+            "Solarized Dark": QColor("#073642"),  # Deep teal
+            "Paper White": QColor("#f5f5f5"),  # Light grey
+            "Ocean Breeze": QColor("#d6f5f9"),  # Light blue
+            "Sepia": QColor("#f9f2e5"),  # Sepia tone
+            "Notion Light": QColor("#f7f7f5"),  # Light grey
+            "Warm Cream": QColor("#f5e8d0"),  # Cream tone
+        }
+        return colors.get(theme, QColor("#f7f7f5"))  # Default to light grey
 
     @classmethod
     def get_theme_palette(cls, theme_name):
         """Get the color palette for a specific theme."""
         palettes = {
+            "Standard": {
+                "background": "#e0e0e0",
+                "text": "black",
+                "accent": "#0078d4",
+                "border": "#cccccc",
+                "hover": "#d0d0d0"
+            },
+            "Paper White": {
+                "background": "#f9f9f9",
+                "text": "#333333",
+                "accent": "#333333",
+                "border": "#cccccc",
+                "hover": "#e1e1e1"
+            },
+            "Ocean Breeze": {
+                "background": "#e0f7fa",
+                "text": "#0277bd",
+                "accent": "#4dd0e1",
+                "border": "#0288d1",
+                "hover": "#b2ebf2"
+            },
+            "Sepia": {
+                "background": "#f4ecd8",
+                "text": "#5a4630",
+                "accent": "#d8c3a5",
+                "border": "#a67c52",
+                "hover": "#c4a484"
+            },
+            "Night Mode": {
+                "background": "#2b2b2b",
+                "text": "#ffffff",
+                "accent": "#ffffff",
+                "border": "#555555",
+                "hover": "#444444"
+            },
+            "Solarized Dark": {
+                "background": "#002b36",
+                "text": "#839496",
+                "accent": "#586e75",
+                "border": "#586e75",
+                "hover": "#073642"
+            },
             "Notion Light": {
                 "background": "#ffffff",
                 "text": "#37352f",
@@ -1147,23 +976,9 @@ class ThemeManager:
                 "accent": "#c9996b",
                 "border": "#e8e0d8",
                 "hover": "#f5e8d6"
-            },    
-            "Warm Ivory": {
-            "background": "#fffdf9",
-            "text": "#5a4d41",
-            "accent": "#d4a76a",
-            "border": "#e6dfd4",
-            "hover": "#f0e8dd"
-            },
-            "Warm Blush": {
-            "background": "#fff8f6",
-            "text": "#654a4a",
-            "accent": "#e79b83",
-            "border": "#f3ddd9",
-            "hover": "#fae8e4"
             },
         }
-        return palettes.get(theme_name, palettes["Notion Light"])
+        return palettes.get(theme_name, palettes["default"])
 
     @classmethod
     def clear_icon_cache(cls):
@@ -1174,7 +989,6 @@ class ThemeManager:
     def refresh_all_icons(cls):
         """Refresh all icons in the application with current theme colors."""
         cls.clear_icon_cache()
-        app = QApplication.instance()
         app = QApplication.instance()
         if app and isinstance(app, QApplication):
             # Force a repaint of all widgets

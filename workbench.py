@@ -325,6 +325,10 @@ class WorkbenchWindow(QMainWindow):
         self.last_opened_project = None
         self.open_project_windows = {}
         self.translation_manager.language_changed.connect(self.on_language_changed)
+        
+        # Connect to theme change signal
+        theme_manager = ThemeManager()
+        theme_manager.themeChanged.connect(self.on_theme_changed)
 
 
     def init_ui(self):
@@ -636,6 +640,28 @@ class WorkbenchWindow(QMainWindow):
         if index >= 0 and index < len(PROJECTS):
             PROJECTS_DATA[LAST_DISPLAYED_KEY] = PROJECTS[index]["name"]
             save_projects(PROJECTS_DATA)
+
+    def on_theme_changed(self, theme_name):
+        """Handle theme changes by refreshing icons and UI elements."""
+        # Refresh workbench icons
+        cog_icon_path = os.path.join("assets", "icons", "settings.svg")
+        self.settings_button.setIcon(ThemeManager.get_tinted_icon(cog_icon_path))
+        self.left_button.setIcon(ThemeManager.get_tinted_icon(os.path.join("assets", "icons", "chevron-left.svg")))
+        self.right_button.setIcon(ThemeManager.get_tinted_icon(os.path.join("assets", "icons", "chevron-right.svg")))
+        
+        # Refresh project cover widgets
+        for i in range(self.coverStack.count()):
+            widget = self.coverStack.widget(i)
+            if isinstance(widget, ProjectCoverWidget):
+                # Refresh the cover button icons
+                cover_button = widget.coverButton
+                if hasattr(cover_button, 'setup_ui'):
+                    cover_button.setup_ui()
+        
+        # Refresh all open project windows
+        for project_name, project_window in self.open_project_windows.items():
+            if project_window and project_window.isVisible():
+                project_window.change_theme(theme_name)
 
 if __name__ == "__main__":
     from PyQt5.QtWidgets import QApplication
