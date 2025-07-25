@@ -514,7 +514,15 @@ class WorkbenchWindow(QMainWindow):
     def open_settings(self):
         options = SettingsDialog(self.translation_manager, self)
         options.settings_saved.connect(self.handle_quote_setting_change)
+        options.settings_saved.connect(self.handle_category_background_setting_change)
         options.exec_()
+
+    def handle_category_background_setting_change(self):
+        """Handle category background setting changes by refreshing open project windows."""
+        # Refresh all open project windows to update category backgrounds
+        for project_name, project_window in self.open_project_windows.items():
+            if project_window and project_window.isVisible():
+                project_window.refresh_category_backgrounds()
 
     def on_language_changed(self, language):
         """Handle language change by updating UI labels."""

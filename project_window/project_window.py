@@ -867,6 +867,10 @@ class ProjectWindow(QMainWindow):
         self.search_panel.update_tint(self.icon_tint)
         self.project_tree.assign_all_icons()
 
+    def refresh_category_backgrounds(self):
+        """Refresh category background colors when the setting changes."""
+        self.project_tree.assign_all_icons()
+
     def change_theme(self, new_theme):
         self.current_theme = new_theme
         # Apply theme to this window only, don't emit global signal to avoid recursion
