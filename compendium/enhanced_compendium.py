@@ -758,6 +758,7 @@ class EnhancedCompendiumWindow(QMainWindow):
             category_item.setExpanded(True)
             self.tree.setCurrentItem(entry_item)
             self.save_compendium_to_file()
+            self.update_relation_combo()
     
     def delete_category(self, category_item):
         confirm = QMessageBox.question(self, _("Confirm Deletion"),
@@ -772,6 +773,7 @@ class EnhancedCompendiumWindow(QMainWindow):
             root = self.tree.invisibleRootItem()
             root.removeChild(category_item)
             self.save_compendium_to_file()
+            self.update_relation_combo()
     
     def delete_entry(self, entry_item):
         entry_name = entry_item.text(0)
@@ -787,6 +789,7 @@ class EnhancedCompendiumWindow(QMainWindow):
             self.save_compendium_to_file()
             if hasattr(self, 'current_entry') and self.current_entry == entry_name:
                 self.clear_entry_ui()
+            self.update_relation_combo()
     
     def rename_item(self, item, item_type):
         current_text = item.text(0)
