@@ -39,10 +39,9 @@ class ProjectTreeWidget(QWidget):
         self.tree.setIndentation(5)  # Reduced indentation for left-justified appearance
         self.tree.headerItem().setToolTip(1, _("Status"))
         self.tree.header().setStretchLastSection(False)
-        self.tree.header().setMinimumSectionSize(30)
-        self.tree.header().resizeSection(1, 30)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.tree.setColumnWidth(1, 40) # 30 + 10 for scroll bar
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.show_context_menu)
         self.tree.currentItemChanged.connect(self.controller.tree_item_changed)
