@@ -1,6 +1,6 @@
 from gettext import pgettext
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTreeWidget, QMenu, 
-                             QMessageBox, QInputDialog, QHeaderView)
+                             QMessageBox, QInputDialog, QHeaderView, QAbstractItemView)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QFont, QBrush
 from . import tree_manager
@@ -103,6 +103,10 @@ class ProjectTreeWidget(QWidget):
                 parent.removeChild(item)
         else:
             self.populate()
+            new_item = self.find_item_by_hierarchy(hierarchy)
+            if new_item:
+                self.tree.setCurrentItem(new_item)
+                self.tree.scrollToItem(new_item, QAbstractItemView.PositionAtCenter)
 
     def find_item_by_hierarchy(self, hierarchy):
         """Find a tree item by its hierarchy path."""
