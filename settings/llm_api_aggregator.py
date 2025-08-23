@@ -13,18 +13,20 @@ from langchain_ollama import ChatOllama
 from langchain_together import ChatTogether
 from .settings_manager import WWSettingsManager
 import logging
+import time  # Added for cache expiration
 
 # Configuration constants
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TEMPERATURE = 0.7
+MODEL_CACHE_TTL = 3600  # Cache TTL in seconds (1 hour)
 
 class LLMProviderBase(ABC):
     """Base class for all LLM providers."""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, aggregator=None):
         self.config = config or {}
         self.cached_models = None
-        self.llm_instance = None
+        self.aggregator = aggregator  # Reference to WW_Aggregator for cache access
     
     @property
     @abstractmethod
@@ -63,10 +65,6 @@ class LLMProviderBase(ABC):
         """Returns a configured LLM instance."""
         pass
     
-    def reset_llm_instance(self):
-        """Reset the cached LLM instance to force reinitialization."""
-        self.llm_instance = None
-    
     def _do_models_request(self, url: str, headers: Dict[str, str] = None) -> List[str]:
         """Send a request to the provider to fetch available models."""
         headers = headers or {'Authorization': f'Bearer {self.get_api_key()}'}
@@ -79,30 +77,47 @@ class LLMProviderBase(ABC):
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available models."""
-        if do_refresh or self.cached_models is None:
-            if self.model_requires_api_key and not self.get_api_key():
-                raise ValueError(f"API key required for {self.provider_name}")
-            url = self.get_base_url()
-            if url[-1] != "/":
-                url += "/"
-            url += "models"
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get(self.model_key, ""),
-                        "name": model.get("name", model.get("display_name", model.get(self.model_key, ""))),
-                        "description": model.get("description", "No description available"),
-                        "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"})
-                    }
-                    for model in models_data.get(self.model_list_key, [])
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        # Check aggregator's cache first
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached  # Update local cache for compatibility
+                return cached
+
+        # Fallback to local cache if aggregator not available or refresh requested
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        # Fetch models from API
+        if self.model_requires_api_key and not self.get_api_key():
+            raise ValueError(f"API key required for {self.provider_name}")
+        url = self.get_base_url()
+        if url[-1] != "/":
+            url += "/"
+        url += "models"
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get(self.model_key, ""),
+                    "name": model.get("name", model.get("display_name", model.get(self.model_key, ""))),
+                    "description": model.get("description", "No description available"),
+                    "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"})
+                }
+                for model in models_data.get(self.model_list_key, [])
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            # Store in aggregator's cache
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
 
     def get_current_model(self) -> str:
@@ -134,8 +149,8 @@ class LLMProviderBase(ABC):
         url = overrides and overrides.get("endpoint") or self.config.get("endpoint", self.get_base_url())
         return url.replace("/chat/completions", "/models")
 
-    def test_connection(self, overrides = None) -> bool:
-        """Test the connection to the provider."""
+    def test_connection(self, overrides=None) -> bool:
+        """Test the connection to the provider. Throws exception when it fails."""
         overrides = overrides or {}
         overrides["max_tokens"] = 1
         if not overrides.get("model"):
@@ -146,11 +161,8 @@ class LLMProviderBase(ABC):
 
         prompt = PromptTemplate(input_variables=[], template="testing connection")
         chain = prompt | llm | StrOutputParser()
-        try:
-            response = chain.invoke({})
-            return True
-        except Exception:
-            return False
+        response = chain.invoke({})
+        return True
 
 class OpenAIProvider(LLMProviderBase):
     """OpenAI LLM provider implementation."""
@@ -168,44 +180,56 @@ class OpenAIProvider(LLMProviderBase):
         return True
     
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatOpenAI(
-                openai_api_key=overrides.get("api_key", self.get_api_key()),
-                openai_api_base=overrides.get("endpoint", self.get_base_url()),
-                model=overrides.get("model", self.get_current_model()),
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                max_tokens=self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
-                request_timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        return ChatOpenAI(
+            openai_api_key=overrides.get("api_key", self.get_api_key()),
+            openai_api_base=overrides.get("endpoint", self.get_base_url()),
+            model=overrides.get("model", self.get_current_model()),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            request_timeout=self.get_timeout(overrides)
+        )
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available OpenAI models."""
-        if do_refresh or self.cached_models is None:
-            if self.model_requires_api_key and not self.get_api_key():
-                raise ValueError(f"API key required for {self.provider_name}")
-            url = self.get_base_url()
-            if url[-1] != "/":
-                url += "/"
-            url += "models"
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get("id", ""),
-                        "name": model.get("id", ""),
-                        "description": "https://platform.openai.com/docs/models/compare",
-                        "context_length": "unknown",
-                        "architecture": {"modality": "text->text", "instruct_type": "general"}
-                    }
-                    for model in models_data.get(self.model_list_key, [])
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        # Use shared cache logic from base class
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached
+                return cached
+
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        if self.model_requires_api_key and not self.get_api_key():
+            raise ValueError(f"API key required for {self.provider_name}")
+        url = self.get_base_url()
+        if url[-1] != "/":
+            url += "/"
+        url += "models"
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get("id", ""),
+                    "name": model.get("id", ""),
+                    "description": "https://platform.openai.com/docs/models/compare",
+                    "context_length": "unknown",
+                    "architecture": {"modality": "text->text", "instruct_type": "general"}
+                }
+                for model in models_data.get(self.model_list_key, [])
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
 
 class AnthropicProvider(LLMProviderBase):
@@ -228,16 +252,14 @@ class AnthropicProvider(LLMProviderBase):
         return True
 
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatAnthropic(
-                anthropic_api_key=overrides.get("api_key", self.get_api_key()),
-                base_url=overrides.get("endpoint", None),
-                model=overrides.get("model", self.get_current_model() or "claude-3-haiku-20240307"),
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                max_tokens=self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
-                timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        return ChatAnthropic(
+            anthropic_api_key=overrides.get("api_key", self.get_api_key()),
+            base_url=overrides.get("endpoint", None),
+            model=overrides.get("model", self.get_current_model() or "claude-3-haiku-20240307"),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            timeout=self.get_timeout(overrides)
+        )
     
     def _do_models_request(self, url: str, headers: Dict[str, str] = None) -> List[str]:
         """Send a request to the provider to fetch available models."""
@@ -277,15 +299,13 @@ class GeminiProvider(LLMProviderBase):
         return True
     
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatGoogleGenerativeAI(
-                google_api_key=overrides.get("api_key", self.get_api_key()),
-                model=overrides.get("model", self.get_current_model() or "gemini-2.0-flash"),
-                temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
-                max_output_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
-                timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        return ChatGoogleGenerativeAI(
+            google_api_key=overrides.get("api_key", self.get_api_key()),
+            model=overrides.get("model", self.get_current_model() or "gemini-2.0-flash"),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_output_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            timeout=self.get_timeout(overrides)
+        )
 
     def _do_models_request(self, url: str, headers: Dict[str, str] = None) -> List[str]:
         """Send a request to the provider to fetch available models."""
@@ -297,38 +317,51 @@ class GeminiProvider(LLMProviderBase):
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available Gemini models."""
-        if do_refresh or self.cached_models is None:
-            if self.model_requires_api_key and not self.get_api_key():
-                raise ValueError(f"API key required for {self.provider_name}")
-            url = self.get_base_url()
-            if url[-1] != "/":
-                url += "/"
-            url += "models"
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get("name", ""),
-                        "name": model.get("displayName", model.get("name", "")),
-                        "description": model.get("description", "Gemini model"),
-                        "version": model.get("version", "unknown"),
-                        "context_length": model.get("inputTokenLimit", 0),
-                        "output_Length": model.get("outputTokenLimit", 0),
-                        "architecture": {"modality": "text->text", "instruct_type": "general"},
-                        "temperature": model.get("temperature", 0),
-                        "max_temperature": model.get("maxTemperature", 1),
-                        "topP": model.get("topP", 0),
-                        "topK": model.get("topK", 0),
-                        "methods": model.get("supportedGenerationMethods", "")
-                    }
-                    for model in models_data.get(self.model_list_key, [])
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached
+                return cached
+
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        if self.model_requires_api_key and not self.get_api_key():
+            raise ValueError(f"API key required for {self.provider_name}")
+        url = self.get_base_url()
+        if url[-1] != "/":
+            url += "/"
+        url += "models"
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get("name", ""),
+                    "name": model.get("displayName", model.get("name", "")),
+                    "description": model.get("description", "Gemini model"),
+                    "version": model.get("version", "unknown"),
+                    "context_length": model.get("inputTokenLimit", 0),
+                    "output_Length": model.get("outputTokenLimit", 0),
+                    "architecture": {"modality": "text->text", "instruct_type": "general"},
+                    "temperature": model.get("temperature", 0),
+                    "max_temperature": model.get("maxTemperature", 1),
+                    "topP": model.get("topP", 0),
+                    "topK": model.get("topK", 0),
+                    "methods": model.get("supportedGenerationMethods", "")
+                }
+                for model in models_data.get(self.model_list_key, [])
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
 
 class OllamaProvider(LLMProviderBase):
@@ -342,41 +375,52 @@ class OllamaProvider(LLMProviderBase):
     def default_endpoint(self) -> str:
         return "http://localhost:11434/v1/"
     
-    def get_llm_instance(self, overrides) -> LLM:
-        if not self.llm_instance:
-            mymodel = overrides.get("model", self.get_current_model())
-            if mymodel[0:5] in ["", "Local"]:
-                mymodel = self.get_current_model()
-            self.llm_instance = ChatOllama(
-                model=mymodel,
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+    def get_llm_instance(self, overrides):
+        mymodel = overrides.get("model", self.get_current_model())
+        if mymodel[0:5] in ["", "Local"]:
+            mymodel = self.get_current_model()
+        return ChatOllama(
+            model=mymodel,
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            timeout=self.get_timeout(overrides)
+        )
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available Ollama models."""
-        if do_refresh or self.cached_models is None:
-            url = self.get_base_url().replace("/v1/", "/api/tags")
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get("name", ""),
-                        "name": model.get("model", model.get("name", "")),
-                        "description": "Local Ollama model",
-                        "context_length": 4096,
-                        "pricing": {"prompt": "0", "completion": "0", "request": "0"},
-                        "architecture": {"modality": "text->text", "instruct_type": "general"}
-                    }
-                    for model in models_data.get("models", [])
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached
+                return cached
+
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        url = self.get_base_url().replace("/v1/", "/api/tags")
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get("name", ""),
+                    "name": model.get("model", model.get("name", "")),
+                    "description": "Local Ollama model",
+                    "context_length": 4096,
+                    "pricing": {"prompt": "0", "completion": "0", "request": "0"},
+                    "architecture": {"modality": "text->text", "instruct_type": "general"}
+                }
+                for model in models_data.get("models", [])
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
 
 class OpenRouterProvider(LLMProviderBase):
@@ -395,45 +439,56 @@ class OpenRouterProvider(LLMProviderBase):
         return True
     
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatOpenAI(
-                openai_api_key=overrides.get("api_key", self.get_api_key()),
-                base_url=overrides.get("endpoint", self.get_base_url()),
-                model=overrides.get("model", self.get_current_model()),
-                temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
-                max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
-                request_timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        return ChatOpenAI(
+            openai_api_key=overrides.get("api_key", self.get_api_key()),
+            base_url=overrides.get("endpoint", self.get_base_url()),
+            model=overrides.get("model", self.get_current_model()),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            request_timeout=self.get_timeout(overrides)
+        )
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available OpenRouter models."""
-        if do_refresh or self.cached_models is None:
-            if self.model_requires_api_key and not self.get_api_key():
-                raise ValueError(f"API key required for {self.provider_name}")
-            url = self.get_base_url()
-            if url[-1] != "/":
-                url += "/"
-            url += "models"
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get("id", ""),
-                        "name": model.get("name", model.get("id", "")),
-                        "description": model.get("description", "OpenRouter model"),
-                        "context_length": model.get("context_length", 4096),
-                        "pricing": model.get("pricing", {"prompt": "0", "completion": "0", "request": "0"}),
-                        "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"})
-                    }
-                    for model in models_data.get(self.model_list_key, [])
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached
+                return cached
+
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        if self.model_requires_api_key and not self.get_api_key():
+            raise ValueError(f"API key required for {self.provider_name}")
+        url = self.get_base_url()
+        if url[-1] != "/":
+            url += "/"
+        url += "models"
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get("id", ""),
+                    "name": model.get("name", model.get("id", "")),
+                    "description": model.get("description", "OpenRouter model"),
+                    "context_length": model.get("context_length", 4096),
+                    "pricing": model.get("pricing", {"prompt": "0", "completion": "0", "request": "0"}),
+                    "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"})
+                }
+                for model in models_data.get(self.model_list_key, [])
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
 
 class TogetherAIProvider(LLMProviderBase):
@@ -452,15 +507,13 @@ class TogetherAIProvider(LLMProviderBase):
         return True
     
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatTogether(
-                together_api_key=overrides.get("api_key", self.get_api_key()),
-                base_url=overrides.get("endpoint", self.get_base_url()),
-                model=overrides.get("model", self.get_current_model()),
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                max_tokens=self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
-            )
-        return self.llm_instance
+        return ChatTogether(
+            together_api_key=overrides.get("api_key", self.get_api_key()),
+            base_url=overrides.get("endpoint", self.get_base_url()),
+            model=overrides.get("model", self.get_current_model()),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+        )
 
     def get_available_models(self, do_refresh: bool = False) -> List[str]:
         """Returns a list of available model IDs from the provider."""
@@ -468,45 +521,58 @@ class TogetherAIProvider(LLMProviderBase):
 
     def get_model_details(self, do_refresh: bool = False) -> List[Dict[str, Any]]:
         """Returns detailed information about available TogetherAI models."""
-        if do_refresh or self.cached_models is None:
-            if self.model_requires_api_key and not self.get_api_key():
-                raise ValueError(f"API key required for {self.provider_name}")
-            url = self.get_base_url()
-            if url[-1] != "/":
-                url += "/"
-            url += "models"
-            response = self._do_models_request(url)
-            if response.status_code == 200:
-                models_data = response.json()
-                self.cached_models = [
-                    {
-                        "id": model.get("id", ""),
-                        "name": model.get("display_name", model.get("id", "")),
-                        "description": model.get("description", "TogetherAI model"),
-                        "context_length": model.get("context_length", 4096),
-                        "pricing": model.get("pricing", {"hourly": "0", "input": "0", "output": "0", "base": "0", "finetune": "0"}),
-                        "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"}),
-                        "created": model.get("created", None),
-                        "type": model.get("type", "chat"),
-                        "running": model.get("running", False),
-                        "organization": model.get("organization", ""),
-                        "link": model.get("link", ""),
-                        "license": model.get("license", ""),
-                        "config": model.get("config", {
-                            "chat_template": "",
-                            "stop": [],
-                            "bos_token": "",
-                            "eos_token": "",
-                            "max_output_length": None
-                        })
-                    }
-                    for model in models_data
-                ]
-                self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
-            else:
-                self.cached_models = []
-                if do_refresh:
-                    raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
+        if self.aggregator and not do_refresh:
+            cached = self.aggregator.get_cached_models(self.provider_name)
+            if cached:
+                logging.debug(f"Returning cached models for {self.provider_name} from aggregator")
+                self.cached_models = cached
+                return cached
+
+        if self.cached_models is not None and not do_refresh:
+            logging.debug(f"Returning local cached models for {self.provider_name}")
+            return self.cached_models
+
+        if self.model_requires_api_key and not self.get_api_key():
+            raise ValueError(f"API key required for {self.provider_name}")
+        url = self.get_base_url()
+        if url[-1] != "/":
+            url += "/"
+        url += "models"
+        logging.debug(f"Fetching models from {url}")
+        response = self._do_models_request(url)
+        if response.status_code == 200:
+            models_data = response.json()
+            self.cached_models = [
+                {
+                    "id": model.get("id", ""),
+                    "name": model.get("display_name", model.get("id", "")),
+                    "description": model.get("description", "TogetherAI model"),
+                    "context_length": model.get("context_length", 4096),
+                    "pricing": model.get("pricing", {"hourly": "0", "input": "0", "output": "0", "base": "0", "finetune": "0"}),
+                    "architecture": model.get("architecture", {"modality": "text->text", "instruct_type": "general"}),
+                    "created": model.get("created", None),
+                    "type": model.get("type", "chat"),
+                    "running": model.get("running", False),
+                    "organization": model.get("organization", ""),
+                    "link": model.get("link", ""),
+                    "license": model.get("license", ""),
+                    "config": model.get("config", {
+                        "chat_template": "",
+                        "stop": [],
+                        "bos_token": "",
+                        "eos_token": "",
+                        "max_output_length": None
+                    })
+                }
+                for model in models_data
+            ]
+            self.cached_models.sort(key=lambda x: x["id"], reverse=self.use_reverse_sort)
+            if self.aggregator:
+                self.aggregator.cache_models(self.provider_name, self.cached_models)
+        else:
+            self.cached_models = []
+            if do_refresh:
+                raise ResourceWarning(response.json().get("error", "Failed to fetch models"))
         return self.cached_models
     
 class LMStudioProvider(LLMProviderBase):
@@ -521,16 +587,14 @@ class LMStudioProvider(LLMProviderBase):
         return "http://localhost:1234/v1"
 
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.llm_instance = ChatOpenAI(
-                api_key="not-needed",
-                base_url=overrides.get("endpoint", self.get_base_url()),
-                model_name=overrides.get("model", self.get_current_model() or "local-model"),
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                max_tokens=self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
-                request_timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        return ChatOpenAI(
+            api_key="not-needed",
+            base_url=overrides.get("endpoint", self.get_base_url()),
+            model_name=overrides.get("model", self.get_current_model() or "local-model"),
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            request_timeout=self.get_timeout(overrides)
+        )
 
 class CustomProvider(LLMProviderBase):
     """Custom LLM provider implementation for local network tools."""
@@ -547,19 +611,17 @@ class CustomProvider(LLMProviderBase):
         return super().get_api_key() or "not-needed"
     
     def get_llm_instance(self, overrides) -> BaseChatModel:
-        if not self.llm_instance:
-            self.config["endpoint"] = overrides.get("endpoint", self.get_base_url())
-            self.config["api_key"] = overrides.get("api_key", self.get_api_key())
-            self.config["model"] = overrides.get("model", self.get_current_model())
-            self.llm_instance = ChatOpenAI(
-                base_url=self.get_base_url(),
-                api_key=self.get_api_key(),
-                model_name=self.get_current_model() or "custom-model",
-                temperature=self.config.get("temperature", DEFAULT_TEMPERATURE),
-                max_tokens=self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
-                request_timeout=self.get_timeout(overrides)
-            )
-        return self.llm_instance
+        self.config["endpoint"] = overrides.get("endpoint", self.get_base_url())
+        self.config["api_key"] = overrides.get("api_key", self.get_api_key())
+        self.config["model"] = overrides.get("model", self.get_current_model())
+        return ChatOpenAI(
+            base_url=self.get_base_url(),
+            api_key=self.get_api_key(),
+            model_name=self.get_current_model() or "custom-model",
+            temperature=overrides.get("temperature", self.config.get("temperature", DEFAULT_TEMPERATURE)),
+            max_tokens=overrides.get("max_tokens", self.config.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            request_timeout=self.get_timeout(overrides)
+        )
 
 class WW_Aggregator:
     """Main aggregator class for managing LLM providers."""
@@ -567,6 +629,8 @@ class WW_Aggregator:
     def __init__(self):
         self._provider_cache = {}
         self._settings = None
+        self._model_cache = {}  # New: Shared cache for model details
+        self._model_cache_timestamps = {}  # New: Timestamps for cache expiration
     
     def create_provider(self, provider_name: str, config: Dict[str, Any] = None) -> Optional[LLMProviderBase]:
         """Create a new provider instance."""
@@ -575,7 +639,7 @@ class WW_Aggregator:
             return None
         
         config = config or {}
-        return provider_class(config)
+        return provider_class(config, aggregator=self)  # Pass self as aggregator
     
     def get_provider(self, provider_name: str) -> Optional[LLMProviderBase]:
         """Get a provider instance by name."""
@@ -589,7 +653,7 @@ class WW_Aggregator:
             if not provider_class:
                 return None
             
-            self._provider_cache[provider_name] = provider_class(config)
+            self._provider_cache[provider_name] = provider_class(config, aggregator=self)
         
         return self._provider_cache[provider_name]
     
@@ -612,6 +676,24 @@ class WW_Aggregator:
             for cls in LLMProviderBase.__subclasses__()
         }
         return provider_map.get(provider_name)
+    
+    def cache_models(self, provider_name: str, models: List[Dict[str, Any]]):
+        """Cache model details for a provider."""
+        self._model_cache[provider_name] = models
+        self._model_cache_timestamps[provider_name] = time.time()
+        logging.debug(f"Cached models for {provider_name}")
+    
+    def get_cached_models(self, provider_name: str) -> Optional[List[Dict[str, Any]]]:
+        """Retrieve cached model details for a provider."""
+        if provider_name in self._model_cache:
+            timestamp = self._model_cache_timestamps.get(provider_name, 0)
+            if time.time() - timestamp < MODEL_CACHE_TTL:
+                return self._model_cache[provider_name]
+            else:
+                logging.debug(f"Cache expired for {provider_name}")
+                del self._model_cache[provider_name]
+                del self._model_cache_timestamps[provider_name]
+        return None
 
 import threading
 
@@ -621,7 +703,7 @@ class LLMAPIAggregator:
     def __init__(self):
         self.aggregator = WW_Aggregator()
         self.interrupt_flag = threading.Event()
-        self.is_streaming = False  # Track whether streaming is active
+        self.is_streaming = False
         logging.debug("LLMAPIAggregator initialized")
     
     def get_llm_providers(self) -> List[str]:
@@ -647,6 +729,10 @@ class LLMAPIAggregator:
         provider = self.aggregator.get_provider(provider_name)
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not found or not configured")
+        
+        # Fallback for default prompt overrides
+        if overrides.get("model") in [None, "Default Model"]:
+            overrides["model"] = provider.get_current_model()
         
         llm = provider.get_llm_instance(overrides)
         
@@ -697,6 +783,10 @@ class LLMAPIAggregator:
             api_key = overrides.get("api_key", provider.get_api_key())
             if not api_key or api_key == "not-needed":
                 raise ValueError(f"API key required for {provider_name} but not provided")
+            
+        # Fallback for default prompt overrides
+        if overrides.get("model") in [None, "Default Model"]:
+            overrides["model"] = provider.get_current_model()
 
         try:
             llm = provider.get_llm_instance(overrides)
@@ -742,7 +832,6 @@ class LLMAPIAggregator:
             logging.debug(f"Stream cleanup, setting is_streaming=False, clearing interrupt_flag")
             self.is_streaming = False
             self.interrupt_flag.clear()
-            provider.reset_llm_instance()
             logging.debug(f"After cleanup, interrupt_flag: {self.interrupt_flag.is_set()}")
 
     def interrupt(self):

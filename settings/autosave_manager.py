@@ -40,20 +40,52 @@ def is_protected_backup(filepath: str) -> bool:
     except Exception:
         return False
 
-def get_latest_autosave_path(project_name: str, hierarchy: list) -> str | None:
+def get_latest_autosave_path(project_name: str, hierarchy: list, uuid: Optional[str] = None) -> str | None:
     """
-    Return the path to the most recent autosave file for a given scene.
+    Return the path to the most recent autosave file for a given scene that is suitable for the provided UUID.
+    A file is suitable if:
+    - The node has no UUID (legacy case, any file is acceptable), or
+    - The file has no UUID (legacy file), or
+    - The file's UUID matches the provided UUID.
     Supports both legacy .txt files and new .html files.
-    Returns None if no autosave file exists.
+    Returns None if no suitable autosave file exists.
+    
+    Parameters:
+        project_name (str): The name of the project.
+        hierarchy (list): List of [act, chapter, scene] names for file lookup.
+        uuid (str, optional): The UUID to match against file UUIDs.
+    
+    Returns:
+        The path to the most recent suitable autosave file, or None if none exists.
     """
+    def get_uuid_from_file(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+                if first_line.startswith("<!-- UUID:"):
+                    return first_line.split("<!-- UUID:")[1].split("-->")[0].strip()
+                return None
+        except Exception:
+            return None
+
     scene_identifier = build_scene_identifier(project_name, hierarchy)
     project_folder = get_project_folder(project_name)
     pattern_txt = os.path.join(project_folder, f"{scene_identifier}_*.txt")
     pattern_html = os.path.join(project_folder, f"{scene_identifier}_*{NEW_FILE_EXTENSION}")
-    autosave_files = glob.glob(pattern_txt) + glob.glob(pattern_html)
+    autosave_files = sorted(glob.glob(pattern_txt) + glob.glob(pattern_html), key=os.path.getmtime, reverse=True)
+    
     if not autosave_files:
         return None
-    return max(autosave_files, key=os.path.getmtime)
+    
+    # Filter files based on UUID compatibility
+    suitable_files = []
+    for filepath in autosave_files:
+        file_uuid = get_uuid_from_file(filepath)
+        if uuid is None or file_uuid is None or file_uuid == uuid:
+            suitable_files.append(filepath)
+    
+    # Return the most recent suitable file, if any
+    return suitable_files[0] if suitable_files else None
 
 def load_latest_autosave(project_name: str, hierarchy: list, node: Optional[dict] = None) -> str | None:
     """
@@ -62,7 +94,7 @@ def load_latest_autosave(project_name: str, hierarchy: list, node: Optional[dict
     Parameters:
         project_name (str): The name of the project.
         hierarchy (list): List of [act, chapter, scene] names for fallback file lookup.
-        node (dict, optional): The node containing 'latest_file' if available.
+        node (dict, optional): The node containing 'latest_file' and 'uuid' if available.
 
     Returns the content if found, or None otherwise.
     """
@@ -93,8 +125,8 @@ def load_latest_autosave(project_name: str, hierarchy: list, node: Optional[dict
         except Exception as e:
             print(f"Error loading latest file {node['latest_file']}: {e}")
 
-    # Fallback to hierarchy-based lookup
-    latest_file = get_latest_autosave_path(project_name, hierarchy)
+    # Fallback to hierarchy-based lookup with UUID filtering
+    latest_file = get_latest_autosave_path(project_name, hierarchy, uuid=uuid_val)
     if latest_file:
         try:
             with open(latest_file, "r", encoding="utf-8") as f:

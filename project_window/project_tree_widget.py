@@ -1,6 +1,6 @@
 from gettext import pgettext
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTreeWidget, QMenu, 
-                             QMessageBox, QInputDialog, QHeaderView)
+                             QMessageBox, QInputDialog, QHeaderView, QAbstractItemView)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QFont, QBrush
 from . import tree_manager
@@ -39,10 +39,9 @@ class ProjectTreeWidget(QWidget):
         self.tree.setIndentation(5)  # Reduced indentation for left-justified appearance
         self.tree.headerItem().setToolTip(1, _("Status"))
         self.tree.header().setStretchLastSection(False)
-        self.tree.header().setMinimumSectionSize(30)
-        self.tree.header().resizeSection(1, 30)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.tree.setColumnWidth(1, 40) # 30 + 10 for scroll bar
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.show_context_menu)
         self.tree.currentItemChanged.connect(self.controller.tree_item_changed)
@@ -104,6 +103,10 @@ class ProjectTreeWidget(QWidget):
                 parent.removeChild(item)
         else:
             self.populate()
+            new_item = self.find_item_by_hierarchy(hierarchy)
+            if new_item:
+                self.tree.setCurrentItem(new_item)
+                self.tree.scrollToItem(new_item, QAbstractItemView.PositionAtCenter)
 
     def find_item_by_hierarchy(self, hierarchy):
         """Find a tree item by its hierarchy path."""

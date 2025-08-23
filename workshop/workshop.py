@@ -348,7 +348,7 @@ class WorkshopWindow(QDialog):
             summary = summarize_conversation(conversation_payload, overrides=overrides)
             conversation_payload = [
                 {"role": "system", "content": prompt_config.get("text", "") if prompt_config else ""},
-                {"role": "system", "content": summary}
+                {"role": "user", "content": summary}
             ]
 
         return conversation_payload
@@ -644,9 +644,6 @@ class WorkshopWindow(QDialog):
                 # Reset the LLM instance in the provider
                 provider_name = self.prompt_panel.get_overrides().get("provider") or WWSettingsManager.get_active_llm_name()
                 provider = WWApiAggregator.aggregator.get_provider(provider_name)
-                if provider:
-                    logging.debug(f"Resetting LLM instance for provider {provider_name}")
-                    provider.reset_llm_instance()
                 logging.debug(f"Worker {worker_id} cleaned up")
                 self.worker = None  # Clear reference
         except Exception as e:
