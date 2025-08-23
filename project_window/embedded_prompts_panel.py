@@ -688,6 +688,9 @@ class EmbeddedPromptsPanel(QWidget):
             return
         
         new_name = new_name.strip()
+        new_prompt = data.copy()
+        new_prompt.update({"name": new_name, "default": False, "id": str(uuid.uuid4())})
+
         parent_item = self.current_prompt_item.parent()
         if parent_item:
             category = parent_item.text(0)
