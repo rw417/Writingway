@@ -22,7 +22,7 @@ class SettingsManager:
         "general": {
             "fast_tts": False,
             "enable_autosave": False,
-            "language": "Language",
+            "language": "en",
             "enable_debug_logging": False
         },
         "appearance": {
