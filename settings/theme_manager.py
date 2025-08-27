@@ -46,7 +46,7 @@ class ThemeManager(QObject):
             QWidget {
                 background-color: #2b2b2b;
                 color: #ffffff;
-                font-family: Arial, sans-serif;
+                font-family: Arial, "Helvetica Neue", Verdana;
             }
             QTreeWidgetItem[is-category="true"] {
             background-color: #424242;
@@ -112,7 +112,7 @@ class ThemeManager(QObject):
             QWidget {
                 background-color: #002b36;
                 color: #839496;
-                font-family: Arial, sans-serif;
+                font-family: Arial, "Helvetica Neue", Verdana;
             }
             QTreeWidgetItem[is-category="true"] {
             background-color: #073642;
@@ -219,7 +219,7 @@ class ThemeManager(QObject):
             QWidget {
                 background-color: #e0f7fa;
                 color: #0277bd;
-                font-family: "Verdana", sans-serif;
+                font-family: "Verdana", "Helvetica Neue", Arial;
             }
             QTreeWidgetItem[is-category="true"] {
             background-color: #d6f5f9;
@@ -307,7 +307,7 @@ class ThemeManager(QObject):
             QWidget {
                 background-color: #ffffff;
                 color: #37352f;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, Verdana;
                 font-size: 14px;
                 line-height: 1.5;
             }
@@ -328,7 +328,7 @@ class ThemeManager(QObject):
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
                 padding: 12px;
-                font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
+                font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, Verdana;
                 font-size: 15px;
                 line-height: 1.6;
                 selection-background-color: #e7f5ff;
@@ -550,7 +550,7 @@ class ThemeManager(QObject):
             QWidget {
                 background-color: #fdfcfa;
                 color: #5a4d41;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, Verdana;
                 font-size: 14px;
                 line-height: 1.5;
             }
@@ -571,7 +571,7 @@ class ThemeManager(QObject):
                 border: 1px solid #e8e0d8;
                 border-radius: 8px;
                 padding: 12px;
-                font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
+                font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, Verdana;
                 font-size: 15px;
                 line-height: 1.6;
                 selection-background-color: #f5e8d0;
@@ -910,7 +910,7 @@ class ThemeManager(QObject):
             "Night Mode": QColor("#424242"),  # Charcoal
             "Solarized Dark": QColor("#073642"),  # Deep teal
             "Paper White": QColor("#f5f5f5"),  # Light grey
-            "Ocean Breeze": QColor("#d6f5f9"),  # Light blue
+            "Ocean Breeze": QColor("#9cdae2"),  # Light blue
             "Sepia": QColor("#f9f2e5"),  # Sepia tone
             "Notion Light": QColor("#f7f7f5"),  # Light grey
             "Warm Cream": QColor("#f5e8d0"),  # Cream tone

@@ -11,23 +11,22 @@ about a writing project, including:
 - Writing progress over time
 """
 
+import sys
 import os
-import json
-import re
 import datetime
-from collections import defaultdict, Counter
-import statistics as stats
+from collections import defaultdict
+import logging
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel, 
-    QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QSplitter,
-    QFrame, QScrollArea, QProgressBar, QComboBox, QGridLayout, QMessageBox, QFileDialog
+    QDialog, QVBoxLayout, QWidget, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QGridLayout, QMessageBox
 )
 from PyQt5.QtGui import QPainter
 from PyQt5.QtCore import Qt
 from PyQt5.QtChart import QChart, QChartView, QBarSeries, QBarSet, QBarCategoryAxis, QValueAxis, QLineSeries
 
 from settings.theme_manager import ThemeManager
+from compendium.compendium_manager import CompendiumManager
 
 # Import text analysis functionality
 # from text_analysis import nlp, comprehensive_analysis
@@ -46,11 +45,13 @@ class ProjectStatistics:
         # Convert to absolute path to avoid working directory issues
         self.project_path = os.path.abspath(project_path)
         self.project_name = os.path.basename(self.project_path)
+        self.logger = logging.getLogger("StatsViewer")
         
-        print(f"Initializing statistics for project: {self.project_name}")
-        print(f"Using absolute path: {self.project_path}")
+        self.logger.debug(f"Initializing statistics for project: {self.project_name}")
+        self.logger.debug(f"Using absolute path: {self.project_path}")
         
         # Initialize all attributes to prevent AttributeError
+        self.compendium_manager = None
         self.compendium_data = {}
         self.scene_contents = {}
         self.scene_metadata = {}
@@ -69,43 +70,27 @@ class ProjectStatistics:
             bool: True if data was loaded successfully, False otherwise
         """
         # Debug output
-        print(f"Loading project data from: {self.project_path}")
-        print(f"Current working directory: {os.getcwd()}")
+        self.logger.debug(f"Loading project data from: {self.project_path}")
+        self.logger.debug(f"Current working directory: {os.getcwd()}")
         
         try:
             files_in_dir = os.listdir(self.project_path)
-            print(f"Files in project directory: {files_in_dir}")
+            self.logger.debug(f"Files in project directory: {files_in_dir}")
         except Exception as e:
-            print(f"ERROR: Cannot list files in '{self.project_path}': {str(e)}")
+            self.logger.error(f"ERROR: Cannot list files in '{self.project_path}': {str(e)}")
             return False
         
         # Load compendium data
-        compendium_path = os.path.join(self.project_path, "compendium.json")
-        if os.path.exists(compendium_path):
-            try:
-                with open(compendium_path, 'r', encoding='utf-8') as f:
-                    self.compendium_data = json.load(f)
-                    print(f"Successfully loaded compendium from {compendium_path}")
-                    print(f"Compendium data type: {type(self.compendium_data)}")
-                    
-                    # If it's a list, convert to a simple dictionary format to make processing easier
-                    if isinstance(self.compendium_data, list):
-                        print("Converting list compendium data to dictionary format")
-                        converted_data = {
-                            "items": self.compendium_data
-                        }
-                        self.compendium_data = converted_data
-            except Exception as e:
-                print(f"Error loading compendium: {e}")
-                self.compendium_data = {}
-        else:
-            print(f"Compendium file not found at {compendium_path}")
-            self.compendium_data = {}
+        self.compendium_manager = CompendiumManager(self.project_name)
+        self.compendium_data = self.compendium_manager.load_data()
         
-        # Updated: Look for HTML files instead of TXT files
-        scene_files = [f for f in os.listdir(self.project_path) if f.endswith('.html')]
-        print(f"Found {len(scene_files)} potential scene files")
-        
+        # Updated: Look for HTML files, excluding those ending with Summary_<timestamp>.html
+        scene_files = [
+            f for f in os.listdir(self.project_path)
+            if f.endswith('.html') and not f.rsplit('-', 1)[-1].startswith('Summary_')
+        ]
+        self.logger.debug(f"Found {len(scene_files)} potential scene files after excluding Summary files")
+
         for scene_file in scene_files:
             try:
                 file_path = os.path.join(self.project_path, scene_file)
@@ -114,7 +99,7 @@ class ProjectStatistics:
                 try:
                     metadata = self._parse_scene_filename(scene_file)
                 except Exception as e:
-                    print(f"Could not parse filename for {scene_file}, using defaults: {str(e)}")
+                    self.logger.error(f"Could not parse filename for {scene_file}, using defaults: {str(e)}")
                     metadata = {
                         'id': scene_file.replace('.html', ''),
                         'project': self.project_name,
@@ -131,7 +116,7 @@ class ProjectStatistics:
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html_content, 'html.parser')
                 content = soup.get_text()
-                print(f"Successfully extracted {len(content)} characters from {scene_file}")
+                self.logger.debug(f"Successfully extracted {len(content)} characters from {scene_file}")
                 
                 # Store content and metadata
                 self.scene_contents[metadata['id']] = content
@@ -163,9 +148,9 @@ class ProjectStatistics:
                 })
                 
             except Exception as e:
-                print(f"Error processing scene file {scene_file}: {e}")
+                self.logger.error(f"Error processing scene file {scene_file}: {e}")
         
-        print(f"Successfully loaded {len(self.scene_contents)} scenes")
+        self.logger.debug(f"Successfully loaded {len(self.scene_contents)} scenes")
         
         # Sort word count history by timestamp
         self.word_count_history.sort(key=lambda x: datetime.datetime.strptime(f"{x['date']} {x['time']}", '%Y-%m-%d %H:%M:%S'))
@@ -175,17 +160,19 @@ class ProjectStatistics:
                 self._process_scene_data()
                 return True
             except Exception as e:
-                print(f"Error processing scene data: {e}")
+                self.logger.error(f"Error processing scene data: {e}")
                 return False
         else:
-            print("No scene data was loaded!")
+            self.logger.error("No scene data was loaded!")
             return False
    
     def _parse_scene_filename(self, filename):
         """
         Parse a scene filename to extract metadata.
         
-        Format: ProjectName-Act#-Chapter#-Scene#_YYYYMMDDHHMMSS.html
+        Format: [ProjectName]-[StructureComponents]_YYYYMMDDHHMMSS.html
+        where ProjectName is the directory name, and StructureComponents can be arbitrary
+        (no requirement for Act, Chapter, Scene keywords).
         
         Args:
             filename (str): The scene filename to parse
@@ -196,36 +183,62 @@ class ProjectStatistics:
         # Remove the .html extension
         base_name = filename.replace('.html', '')
         
-        # Split into parts
+        # Split on underscore to separate timestamp
         parts = base_name.split('_')
-        timestamp = parts[1] if len(parts) > 1 else ""
         
-        # Parse project-act-chapter-scene
-        structure_parts = parts[0].split('-')
-        if len(structure_parts) >= 4:
-            project = structure_parts[0]
-            act = structure_parts[1]
-            chapter = structure_parts[2]
-            scene = structure_parts[3]
+        # Extract timestamp (last part, if present)
+        timestamp = parts[-1] if len(parts) > 1 else ""
+        
+        # Validate timestamp format (YYYYMMDDHHMMSS, 14 digits)
+        if timestamp and not (len(timestamp) == 14 and timestamp.isdigit()):
+            self.logger.error(f"Invalid timestamp format in {filename}: {timestamp}")
+            timestamp = ""
+        
+        # Get the structural components (everything before the timestamp)
+        structure = parts[0] if parts else base_name
+        
+        # Strip the project name from the start of the structure
+        project = self.project_name
+        if filename.startswith(project):
+            structure = base_name[len(project):-len(timestamp)-1].lstrip('-')
         else:
-            # Handle cases where the filename doesn't match expected format
-            project = self.project_name
-            act = "Unknown"
-            chapter = "Unknown"
-            scene = "Unknown"
+            self.logger.error(f"Warning: Filename {filename} does not start with project name {project}")
+            structure = structure
         
-        scene_id = f"{act}-{chapter}-{scene}"
+        # Split the remaining structure into components on hyphens
+        structure_parts = structure.split('-') if structure else []
+        
+        # Assign the last three components (if available) as the structural hierarchy
+        if len(structure_parts) >= 3:
+            level1 = structure_parts[-3]  # First level (e.g., Act equivalent)
+            level2 = structure_parts[-2]  # Second level (e.g., Chapter equivalent)
+            level3 = structure_parts[-1]  # Third level (e.g., Scene equivalent)
+        elif len(structure_parts) == 2:
+            level1 = "Unknown"
+            level2 = structure_parts[-2]
+            level3 = structure_parts[-1]
+        elif len(structure_parts) == 1:
+            level1 = "Unknown"
+            level2 = "Unknown"
+            level3 = structure_parts[-1]
+        else:
+            level1 = "Unknown"
+            level2 = "Unknown"
+            level3 = "Unknown"
+        
+        # Create scene_id as a combination of the three structural levels
+        scene_id = f"{level1}-{level2}-{level3}"
         
         return {
             'id': scene_id,
             'project': project,
-            'act': act,
-            'chapter': chapter,
-            'scene': scene,
+            'act': level1,
+            'chapter': level2,
+            'scene': level3,
             'timestamp': timestamp,
             'filename': filename
         }
-    
+        
     def _process_scene_data(self):
         """
         Process all scene data to generate statistics.
@@ -246,40 +259,47 @@ class ProjectStatistics:
         custom_categories = {}
 
         if self.compendium_data:
-            try:
-                # Check if compendium_data is a dictionary or a list
-                if isinstance(self.compendium_data, dict):
-                    # Process dictionary format
-                    for category_name, entries in self.compendium_data.items():
-                        if isinstance(entries, dict):  # Make sure entries is also a dict
-                            if category_name.lower() == "characters":
-                                characters = entries
-                            elif category_name.lower() == "locations":
-                                locations = entries
-                            else:
-                                custom_categories[category_name] = entries
-                elif isinstance(self.compendium_data, list):
-                    # Process list format
-                    print(f"Warning: Compendium data is in list format with {len(self.compendium_data)} items")
-                    # You could implement a different parsing logic here based on your data structure
+            categories = self.compendium_data.get("categories", [])
+            for cat in categories:
+                category_name = cat.get("name", "")
+                entries = cat.get("entries", [])
+                # Normalize entries to dict {name: data}
+                if isinstance(entries, list):
+                    entry_dict = {}
+                    for e in entries:
+                        if isinstance(e, str):
+                            entry_dict[e] = None
+                        elif isinstance(e, dict):
+                            name = e.get("name", "")
+                            if name:
+                                entry_dict[name] = e
+                    entries = entry_dict
+                elif isinstance(entries, dict):
+                    pass  # already dict
                 else:
-                    print(f"Warning: Unexpected compendium data type: {type(self.compendium_data)}")
-            except Exception as e:
-                print(f"Error processing compendium data: {e}")
+                    continue
 
+                lower_name = category_name.lower()
+                if lower_name == "characters":
+                    characters = entries
+                elif lower_name == "locations":
+                    locations = entries
+                else:
+                    custom_categories[category_name] = entries
+                    
         # Process each scene
         for scene_id, content in self.scene_contents.items():
             # Run text analysis
             try:
                 self.analysis_results[scene_id] = comprehensive_analysis(content)
             except Exception as e:
-                print(f"Error analyzing scene {scene_id}: {e}")
+                self.logger.error(f"Error analyzing scene {scene_id}: {e}")
                 self.analysis_results[scene_id] = {}
 
             # Find character mentions
             if characters:
                 try:
-                    for char_name, char_data in characters.items():
+                    for char_name in characters:
                         if char_name.lower() in content.lower():
                             mention_count = content.lower().count(char_name.lower())
                             self.character_mentions[char_name].append({
@@ -287,12 +307,12 @@ class ProjectStatistics:
                                 'count': mention_count
                             })
                 except Exception as e:
-                    print(f"Error processing character mentions: {e}")
+                    self.logger.error(f"Error processing character mentions: {e}")
 
             # Find location mentions
             if locations:
                 try:
-                    for loc_name, loc_data in locations.items():
+                    for loc_name in locations:
                         if loc_name.lower() in content.lower():
                             mention_count = content.lower().count(loc_name.lower())
                             self.location_mentions[loc_name].append({
@@ -300,23 +320,21 @@ class ProjectStatistics:
                                 'count': mention_count
                             })
                 except Exception as e:
-                    print(f"Error processing location mentions: {e}")
+                    self.logger.error(f"Error processing location mentions: {e}")
 
             # Find custom category mentions
             try:
                 for category_name, entries in custom_categories.items():
-                    if isinstance(entries, dict):  # Make sure entries is a dict
-                        for entry_name, entry_data in entries.items():
-                            if entry_name.lower() in content.lower():
-                                mention_count = content.lower().count(entry_name.lower())
-                                self.custom_mentions[category_name].append({
-                                    'entry': entry_name,
-                                    'scene_id': scene_id,
-                                    'count': mention_count
-                                })
+                    for entry_name in entries:
+                        if entry_name.lower() in content.lower():
+                            mention_count = content.lower().count(entry_name.lower())
+                            self.custom_mentions[category_name].append({
+                                'entry': entry_name,
+                                'scene_id': scene_id,
+                                'count': mention_count
+                            })
             except Exception as e:
-                print(f"Error processing custom category mentions: {e}")
-
+                self.logger.error(f"Error processing custom category mentions: {e}")
     
     def get_word_count_stats(self):
         """
@@ -563,6 +581,17 @@ class ProjectStatistics:
             }
         }
     
+    def _is_entry_used(self, category_name, entry_name):
+        if category_name.lower() == "characters":
+            return entry_name in self.character_mentions
+        elif category_name.lower() == "locations":
+            return entry_name in self.location_mentions
+        else:
+            for mention in self.custom_mentions.get(category_name, []):
+                if mention['entry'] == entry_name:
+                    return True
+        return False
+
     def get_compendium_usage_stats(self):
         """
         Calculate statistics about compendium usage in the manuscript.
@@ -581,51 +610,38 @@ class ProjectStatistics:
         unused_entries = {}
         
         # Process each category in the compendium data
-        for category_name, entries in self.compendium_data.items():
+        categories = self.compendium_data.get("categories", [])
+        for cat in categories:
+            category_name = cat.get("name", "")
+            entries = cat.get("entries", [])
             used_entries = 0
             unused = []
+            total_entries = 0
             
-            # Check if entries is a dictionary
-            if isinstance(entries, dict):
-                total_entries = len(entries)
-                for entry_name in entries.keys():
-                    is_used = False
-                    if category_name.lower() == "characters":
-                        is_used = entry_name in self.character_mentions
-                    elif category_name.lower() == "locations":
-                        is_used = entry_name in self.location_mentions
-                    else:
-                        for mention in self.custom_mentions.get(category_name, []):
-                            if mention['entry'] == entry_name:
-                                is_used = True
-                                break
-                    if is_used:
-                        used_entries += 1
-                    else:
-                        unused.append(entry_name)
-            # If entries is a list, iterate over its items
-            elif isinstance(entries, list):
+            if isinstance(entries, list):
                 total_entries = len(entries)
                 for entry in entries:
-                    # Assume the entry is a string; if it's a dict, try to get a name
-                    entry_name = entry if isinstance(entry, str) else (entry.get("name", "Unknown") if isinstance(entry, dict) else "Unknown")
-                    is_used = False
-                    if category_name.lower() == "characters":
-                        is_used = entry_name in self.character_mentions
-                    elif category_name.lower() == "locations":
-                        is_used = entry_name in self.location_mentions
+                    if isinstance(entry, str):
+                        entry_name = entry
+                    elif isinstance(entry, dict):
+                        entry_name = entry.get("name", "Unknown")
                     else:
-                        for mention in self.custom_mentions.get(category_name, []):
-                            if mention['entry'] == entry_name:
-                                is_used = True
-                                break
+                        continue
+                    if not entry_name or entry_name == "Unknown":
+                        continue
+                    is_used = self._is_entry_used(category_name, entry_name)
                     if is_used:
                         used_entries += 1
                     else:
                         unused.append(entry_name)
-            else:
-                # If the type is unexpected, skip it.
-                continue
+            elif isinstance(entries, dict):
+                total_entries = len(entries)
+                for entry_name, entry_data in entries.items():
+                    is_used = self._is_entry_used(category_name, entry_name)
+                    if is_used:
+                        used_entries += 1
+                    else:
+                        unused.append(entry_name)
             
             usage_percent = (used_entries / total_entries * 100) if total_entries > 0 else 0
             usage_by_category[category_name] = {
@@ -646,6 +662,25 @@ class ProjectStatistics:
             'orphaned_references': orphaned_references
         }
 
+    def get_compendium_entries(self, category):
+        categories = self.compendium_data.get("categories", [])
+        for cat in categories:
+            if cat.get("name", "").lower() == category.lower():
+                entries = cat.get("entries", [])
+                names = []
+                if isinstance(entries, list):
+                    for e in entries:
+                        if isinstance(e, str):
+                            names.append(e)
+                        elif isinstance(e, dict):
+                            name = e.get("name")
+                            if name:
+                                names.append(name)
+                elif isinstance(entries, dict):
+                    names = list(entries.keys())
+                return names
+        return []
+    
 class StatisticsChart(QChartView):
     """
     Custom chart view for displaying statistics charts.
@@ -758,9 +793,10 @@ class StatisticsChart(QChartView):
 class StatisticsDialog(QDialog):
     def __init__(self, project_path, parent=None):
         super().__init__(parent)
-        self.project_path = project_path
-        self.project_name = os.path.basename(project_path)
+        self.project_path = os.path.abspath(project_path)
+        self.project_name = os.path.basename(self.project_path)
         self.statistics = ProjectStatistics(project_path)
+        self.logger = logging.getLogger("StatsViewer")
 
         self.setWindowTitle(f"Statistics - {self.project_name}")
         # Enable minimize and maximize buttons on the dialog
@@ -775,9 +811,7 @@ class StatisticsDialog(QDialog):
         """Initialize the user interface."""
         import os
         from PyQt5.QtWidgets import (
-            QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel, 
-            QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QSplitter,
-            QFrame, QScrollArea, QProgressBar, QComboBox, QGridLayout, QFileDialog, QMessageBox
+            QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QPushButton
         )
         from PyQt5.QtCore import Qt
         
@@ -797,7 +831,7 @@ class StatisticsDialog(QDialog):
         if os.path.exists(refresh_icon_path):
             refresh_button.setIcon(ThemeManager.get_tinted_icon(refresh_icon_path))
         else:
-            print(f"Warning: Icon file not found: {refresh_icon_path}")
+            self.logger.warning(f"Warning: Icon file not found: {refresh_icon_path}")
         
         refresh_button.clicked.connect(self.load_data)
         header_layout.addWidget(refresh_button, alignment=Qt.AlignRight)
@@ -825,7 +859,7 @@ class StatisticsDialog(QDialog):
         if os.path.exists(download_icon_path):
             export_button.setIcon(ThemeManager.get_tinted_icon(download_icon_path))
         else:
-            print(f"Warning: Icon file not found: {download_icon_path}")
+            self.logger.warning(f"Warning: Icon file not found: {download_icon_path}")
         
         export_button.clicked.connect(self.export_report)
         
@@ -1117,7 +1151,6 @@ class StatisticsDialog(QDialog):
         # Load statistics data using the ProjectStatistics instance
         success = self.statistics.load_data()
         if not success:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Load Error", "Failed to load project statistics.")
             return
         
@@ -1254,7 +1287,7 @@ class StatisticsDialog(QDialog):
                         scenes.append(scene_label)
                 
                 # Check if character is in compendium
-                in_compendium = "✓" if char_name in self.statistics.compendium_data.get("characters", {}) else "✗"
+                in_compendium = "✓" if char_name in self.statistics.get_compendium_entries("characters") else "✗"
                 
                 self.character_table.setItem(row, 0, QTableWidgetItem(char_name))
                 self.character_table.setItem(row, 1, QTableWidgetItem(f"{mentions:,}"))
@@ -1265,7 +1298,7 @@ class StatisticsDialog(QDialog):
             # Sort by mentions
             self.character_table.sortItems(1, Qt.DescendingOrder)
         except Exception as e:
-            print(f"Error updating characters tab: {e}")
+            self.logger.error(f"Error updating characters tab: {e}")
             QMessageBox.warning(self, "Error", f"Could not update characters tab: {e}")
     
     def update_locations_tab(self):
@@ -1422,7 +1455,7 @@ class StatisticsDialog(QDialog):
     def export_report(self):
         """Export statistics as an HTML report."""
         # Get export path
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         
         file_path, unused = QFileDialog.getSaveFileName(
             self, "Export Statistics Report", "", "HTML Files (*.html)"
@@ -1608,15 +1641,10 @@ def show_statistics(project_path):
     Args:
         project_path (str): Path to the project directory
     """
-    from PyQt5.QtWidgets import QApplication, QMessageBox
-    import sys
-    
-    print(f"Opening statistics for project: {project_path}")
-    print(f"Absolute path: {os.path.abspath(project_path)}")
+    from PyQt5.QtWidgets import QApplication
     
     if not os.path.exists(project_path):
         error_msg = f"Project path does not exist: {project_path}"
-        print(f"ERROR: {error_msg}")
         QMessageBox.critical(None, "Project Not Found", error_msg)
         return
     
@@ -1632,7 +1660,6 @@ def show_statistics(project_path):
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"ERROR: {error_details}")
         QMessageBox.critical(None, "Statistics Error", 
                            f"Error loading statistics: {str(e)}\n\n"
                            f"Details:\n{error_details}")
@@ -1644,7 +1671,6 @@ def show_statistics(project_path):
 
 if __name__ == "__main__":
     # For testing purposes
-    import sys
     from PyQt5.QtWidgets import QApplication
     
     app = QApplication(sys.argv)
