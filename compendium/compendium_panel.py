@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import QWidget, QTreeWidget, QVBoxLayout, QMenu, QTreeWidgetItem, QMessageBox, QDialog
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QBrush
-import json, os, re
+import json, os, re, uuid
 from langchain.prompts import PromptTemplate
 
 from .ai_compendium_dialog import AICompendiumDialog
@@ -78,6 +78,19 @@ class CompendiumPanel(QWidget):
                 if DEBUG:
                     print("Compendium data loaded:", data)
                 
+                # Migrate to add uuid if missing
+                changed = False
+                for cat in data.get("categories", []):
+                    for entry in cat.get("entries", []):
+                        if "uuid" not in entry:
+                            entry["uuid"] = str(uuid.uuid4())
+                            changed = True
+                if changed:
+                    with open(self.compendium_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                    if DEBUG:
+                        print("Added UUIDs to compendium entries and saved.")
+    
                 if isinstance(data.get("categories"), dict):
                     if DEBUG:
                         print("Old format detected. Converting data...")
@@ -328,7 +341,8 @@ Return only the JSON result without additional commentary. The JSON should maint
                             existing_entries[entry_name] = {
                                 "name": entry_name,
                                 "content": new_entry.get("content", ""),
-                                "relationships": new_entry.get("relationships", [])
+                                "relationships": new_entry.get("relationships", []),
+                                "uuid": new_entry.get("uuid", str(uuid.uuid4()))
                             }
                             existing["extensions"]["entries"][entry_name] = {
                                 "relationships": new_entry.get("relationships", []),

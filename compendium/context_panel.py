@@ -1,9 +1,9 @@
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot
 from compendium.compendium_manager import CompendiumManager
+from settings.selection_manager import SelectionManager
 
 class ContextPanel(QWidget):
-    # Optional signal if ContextPanel itself updates the compendium in the future
     compendium_updated = pyqtSignal(str)  # str is the project_name
     """
     A panel that lets the user choose extra context for the prose prompt.
@@ -13,119 +13,106 @@ class ContextPanel(QWidget):
     Selections persist until manually changed.
     """
 
-    def __init__(self, project_structure, project_name, parent=None, enhanced_window=None):
+    def __init__(self, project_structure, project_name, parent, enhanced_window=None):
         super().__init__(parent)
-        self.project_structure = project_structure  # reference to the project structure
+        self.project_structure = project_structure
         self.project_name = project_name
         self.controller = parent
         self.compendium_manager = CompendiumManager(project_name)
-        self.enhanced_window = enhanced_window  # Store enhanced_window instance
+        self.selection_manager = SelectionManager(project_name, parent.metaObject().className())
+        self.enhanced_window = enhanced_window
         self.uuid_map = {}  # Map UUIDs to QTreeWidgetItems
+        self._building_tree = False
         self.init_ui()
         if hasattr(self.controller, "model") and self.controller.model:
             self.controller.model.structureChanged.connect(self.on_structure_changed)
-
-        # Connect to EnhancedCompendiumWindow signal
         self.connect_to_compendium_signal()
 
     def init_ui(self):
-        # Use a horizontal layout to take advantage of the unused horizontal space.
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        # QSplitter provides adjustable space between panels.
         splitter = QSplitter(Qt.Horizontal, self)
         layout.addWidget(splitter)
 
-        # Left: Project Structure
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderHidden(True)
         self.build_project_tree()
-        # Propagate check state changes (if needed) for project tree items.
         self.project_tree.itemChanged.connect(self.propagate_check_state)
         splitter.addWidget(self.project_tree)
 
-        # Right: Compendium
         self.compendium_tree = QTreeWidget()
         self.compendium_tree.setHeaderHidden(True)
         self.build_compendium_tree()
-        self.compendium_tree.itemChanged.connect(self.propagate_check_state)
+        self.compendium_tree.itemChanged.connect(self.on_compendium_item_changed)
         splitter.addWidget(self.compendium_tree)
 
-        # Optionally, set initial splitter ratios (here both panels share space equally)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         self.setLayout(layout)
 
+    def on_compendium_item_changed(self, item, column):
+        """
+        Handle compendium item changes, saving selections and propagating check states.
+        """
+        if not self._building_tree:
+            self.selection_manager.save_selections(self.compendium_tree)
+        self.propagate_check_state(item, column)
+
     def build_project_tree(self):
         """Build a tree from the project structure showing only chapters and scenes."""
+        check_states = {}
+        for uuid, item in self.uuid_map.items():
+            if item.flags() & Qt.ItemIsUserCheckable:
+                check_states[uuid] = item.checkState(0)
+
         self.project_tree.clear()
         self.uuid_map.clear()
         for act in self.project_structure.get("acts", []):
-            # Create the Act item (not user-checkable)
-            act_item = QTreeWidgetItem(
-                self.project_tree, [act.get("name", "Unnamed Act")]
-            )
+            act_item = QTreeWidgetItem(self.project_tree, [act.get("name", "Unnamed Act")])
             act_item.setFlags(act_item.flags() & ~Qt.ItemIsUserCheckable)
+            act_item.setData(0, Qt.UserRole, {"type": "act", "data": act})
             self.uuid_map[act["uuid"]] = act_item
 
-            # Add Summary item if it exists
             if "summary" in act and not act["summary"].startswith("This is the summary"):
                 summary_item = QTreeWidgetItem(act_item, ["Summary"])
                 summary_item.setFlags(summary_item.flags() | Qt.ItemIsUserCheckable)
-                summary_item.setCheckState(0, Qt.Unchecked)
-                summary_item.setData(
-                    0, Qt.UserRole, {"type": "summary", "data": act}
-                )
-                self.uuid_map[act["uuid"] + "_summary"] = summary_item  # Unique key for summary
+                summary_uuid = act["uuid"] + "_summary"
+                summary_item.setCheckState(0, check_states.get(summary_uuid, Qt.Unchecked))
+                summary_item.setData(0, Qt.UserRole, {"type": "summary", "data": act})
+                self.uuid_map[summary_uuid] = summary_item
 
             for chapter in act.get("chapters", []):
-                # Create the Chapter item (not user-checkable)
-                chapter_item = QTreeWidgetItem(
-                    act_item, [chapter.get("name", "Unnamed Chapter")]
-                )
+                chapter_item = QTreeWidgetItem(act_item, [chapter.get("name", "Unnamed Chapter")])
                 chapter_item.setFlags(chapter_item.flags() & ~Qt.ItemIsUserCheckable)
-                chapter_item.setData(
-                    0, Qt.UserRole, {"type": "chapter", "data": chapter}
-                )
+                chapter_item.setData(0, Qt.UserRole, {"type": "chapter", "data": chapter})
                 self.uuid_map[chapter["uuid"]] = chapter_item
 
-                # Add Summary item if it exists
                 if "summary" in chapter and not chapter["summary"].startswith("This is the summary"):
                     summary_item = QTreeWidgetItem(chapter_item, ["Summary"])
                     summary_item.setFlags(summary_item.flags() | Qt.ItemIsUserCheckable)
-                    summary_item.setCheckState(0, Qt.Unchecked)
-                    summary_item.setData(
-                        0, Qt.UserRole, {"type": "summary", "data": chapter}
-                    )
-                    self.uuid_map[chapter["uuid"] + "_summary"] = summary_item
+                    summary_uuid = chapter["uuid"] + "_summary"
+                    summary_item.setCheckState(0, check_states.get(summary_uuid, Qt.Unchecked))
+                    summary_item.setData(0, Qt.UserRole, {"type": "summary", "data": chapter})
+                    self.uuid_map[summary_uuid] = summary_item
 
                 for scene in chapter.get("scenes", []):
-                    # Scenes remain checkable
-                    scene_item = QTreeWidgetItem(
-                        chapter_item, [scene.get("name", "Unnamed Scene")]
-                    )
+                    scene_item = QTreeWidgetItem(chapter_item, [scene.get("name", "Unnamed Scene")])
                     scene_item.setFlags(scene_item.flags() | Qt.ItemIsUserCheckable)
-                    scene_item.setCheckState(0, Qt.Unchecked)
-                    scene_item.setData(
-                        0, Qt.UserRole, {"type": "scene", "data": scene}
-                    )
+                    scene_item.setCheckState(0, check_states.get(scene["uuid"], Qt.Unchecked))
+                    scene_item.setData(0, Qt.UserRole, {"type": "scene", "data": scene})
                     self.uuid_map[scene["uuid"]] = scene_item
 
         self.project_tree.expandAll()
 
     def build_compendium_tree(self):
-        """Build a tree from the compendium data."""
-        selected_item_info = self.get_selected_item_info()
+        """Build a tree from the compendium data and restore selections."""
+        self._building_tree = True
         self.compendium_tree.clear()
         data = self.compendium_manager.load_data()
 
-        # Get categories from the new format (list) or legacy format (dict)
         categories = data.get("categories", [])
         if isinstance(categories, dict):
-            # Legacy format: convert dict to list of category objects.
-            new_categories = []
-            for cat, entries in categories.items():
-                new_categories.append({"name": cat, "entries": entries})
+            new_categories = [{"name": cat, "entries": entries} for cat, entries in categories.items()]
             categories = new_categories
 
         for cat in categories:
@@ -137,25 +124,14 @@ class ContextPanel(QWidget):
                 entry_name = entry.get("name", "Unnamed Entry")
                 entry_item = QTreeWidgetItem(cat_item, [entry_name])
                 entry_item.setFlags(entry_item.flags() | Qt.ItemIsUserCheckable)
-                entry_item.setCheckState(0, Qt.Unchecked)
+                # Restore check state using item path
+                item_path = f"{cat_name}/{entry_name}"
+                entry_item.setCheckState(0, Qt.Checked if self.selection_manager.is_checked(item_path) else Qt.Unchecked)
                 entry_item.setData(
                     0, Qt.UserRole, {"type": "compendium", "category": cat_name, "label": entry_name}
                 )
         self.compendium_tree.expandAll()
-        self.restore_selection(selected_item_info)
-
-    def get_selected_item_info(self):
-        """Capture details of the currently selected item."""
-        current_item = self.compendium_tree.currentItem()
-        if not current_item:
-            return None
-        item_type = current_item.data(0, Qt.UserRole)
-        item_name = current_item.text(0)
-        if item_type == "entry":
-            parent_item = current_item.parent()
-            parent_name = parent_item.text(0) if parent_item else None
-            return {"type": "entry", "name": item_name, "category": parent_name}
-        return {"type": "category", "name": item_name}
+        self._building_tree = False
 
     def restore_selection(self, selected_item_info):
         """Attempt to reselect the previously selected item."""
@@ -181,7 +157,6 @@ class ContextPanel(QWidget):
                     if entry_item.text(0) == item_name and entry_item.data(0, Qt.UserRole) == "entry":
                         self.compendium_tree.setCurrentItem(entry_item)
                         return
-                # If exact entry not found, select first entry or category
                 if category_name and cat_item.text(0) == category_name:
                     if cat_item.childCount() > 0:
                         self.compendium_tree.setCurrentItem(cat_item.child(0))
@@ -193,13 +168,9 @@ class ContextPanel(QWidget):
     def propagate_check_state(self, item, column):
         """
         Propagate check state changes to children and update parent items.
-        This method can cause partial-check states on parent items if some children
-        are checked. If you don't want partial checks at all, you can remove or
-        simplify this logic.
         """
         data = item.data(0, Qt.UserRole)
         if data and data.get("type") == "summary" and item.checkState(column) == Qt.Checked:
-            # When summary is checked, uncheck all children of the parent
             parent = item.parent()
             if parent:
                 for i in range(parent.childCount()):
@@ -210,14 +181,12 @@ class ContextPanel(QWidget):
             state = item.checkState(column)
             for i in range(item.childCount()):
                 child = item.child(i)
-                # Only update children if they're user-checkable:
                 if child.flags() & Qt.ItemIsUserCheckable:
                     child.setCheckState(0, state)
         self.update_parent_check_state(item)
 
     def update_parent_check_state(self, item):
         parent = item.parent()
-        # If parent is not user-checkable, there's no checkbox to update
         if not parent or not (parent.flags() & Qt.ItemIsUserCheckable):
             return
 
@@ -233,20 +202,20 @@ class ContextPanel(QWidget):
         else:
             parent.setCheckState(0, Qt.Unchecked)
 
-        # Recursively update further up
         self.update_parent_check_state(parent)
 
     def get_selected_context_text(self):
-        """Collect selected text from both panels, formatted with headers."""
+        """
+        Collect selected text from both compendium and project panels for compatibility.
+        """
+        compendium_text = self.get_selected_compendium_text()
+        story_text = self.get_selected_story_text()
+        texts = [text for text in [compendium_text, story_text] if text]
+        return "\n\n".join(texts) if texts else ""
+
+    def get_selected_compendium_text(self):
+        """Collect selected text from the compendium panel, formatted with headers."""
         texts = []
-        temp_editor = QTextEdit()
-
-        # Gather from Project panel
-        root = self.project_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            self._traverse_project_item(root.child(i), texts, temp_editor)
-
-        # Gather from Compendium panel
         for i in range(self.compendium_tree.topLevelItemCount()):
             cat_item = self.compendium_tree.topLevelItem(i)
             category = cat_item.text(0)
@@ -255,10 +224,16 @@ class ContextPanel(QWidget):
                 if entry_item.checkState(0) == Qt.Checked:
                     text = self.compendium_manager.get_text(category, entry_item.text(0))
                     texts.append(f"[Compendium Entry - {category} - {entry_item.text(0)}]:\n{text}")
+        return "\n\n".join(texts) if texts else ""
 
-        if texts:
-            return "\n\n".join(texts)
-        return ""
+    def get_selected_story_text(self):
+        """Collect selected text from the project panel, formatted with headers."""
+        texts = []
+        temp_editor = QTextEdit()
+        root = self.project_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            self._traverse_project_item(root.child(i), texts, temp_editor)
+        return "\n\n".join(texts) if texts else ""
 
     def _load_content(self, data_type, data, hierarchy):
         """Helper method to load content consistently for summaries and scenes."""
@@ -267,7 +242,6 @@ class ContextPanel(QWidget):
             if uuid_val:
                 return self.controller.model.load_summary(uuid=uuid_val)
         elif data_type == "scene":
-            # Use existing autosave loading logic
             return self.controller.model.load_autosave(hierarchy) or data.get("content")
         return None
 
@@ -287,33 +261,28 @@ class ContextPanel(QWidget):
                 elif content_type == "scene":
                     texts.append(f"[Scene Content - {item.text(0)}]:\n{content_text}")
         
-        # Recurse children
         for i in range(item.childCount()):
             self._traverse_project_item(item.child(i), texts, temp_editor)
 
     def on_structure_changed(self, hierarchy, uuid):
-        """Handle structure changes by updating only affected items."""
+        """Handle structure changes by updating the project tree."""
         if self.isHidden():
-            return # Panel will be populated when shown
+            return
         node = self.controller.model._get_node_by_hierarchy(hierarchy)
-        if uuid in self.uuid_map:  # Existing node modified
-            item = self.uuid_map[uuid]
-            if node:  # Update (e.g., rename)
-                item.setText(0, node["name"])
-                item.setData(0, Qt.UserRole, {"type": item.data(0, Qt.UserRole)["type"], "data": node})
-                self._update_item_for_summary(hierarchy, uuid)
-            else:  # Delete
+        if not node:
+            if uuid in self.uuid_map:
+                item = self.uuid_map[uuid]
                 parent = item.parent() or self.project_tree.invisibleRootItem()
                 parent.removeChild(item)
                 del self.uuid_map[uuid]
                 if uuid + "_summary" in self.uuid_map:
                     del self.uuid_map[uuid + "_summary"]
-        else:
-            # Fallback to full rebuild if no current item
-            self.build_project_tree()
-            # Optionally call _update_item_for_summary(hierarchy, uuid) here if node exists
-            if node:
-                self._update_item_for_summary(hierarchy, uuid)
+            return
+
+        self.project_structure = self.controller.model.structure
+        self.build_project_tree()
+        if node:
+            self._update_item_for_summary(hierarchy, uuid)
 
     def _update_item_for_summary(self, hierarchy, uuid):
         """Update or insert a summary checkbox for the item at the given hierarchy."""
@@ -324,7 +293,6 @@ class ContextPanel(QWidget):
         if not current_item:
             return
 
-        # Check for existing "Summary" child
         summary_exists = False
         summary_item = None
         for i in range(current_item.childCount()):
@@ -337,17 +305,15 @@ class ContextPanel(QWidget):
                     del self.uuid_map[uuid + "_summary"]
                 break
 
-        # Add new "Summary" item if it doesn't exist and summary is meaningful
         if not summary_exists and not node["summary"].startswith("This is the summary"):
             summary_item = QTreeWidgetItem(["Summary"])
             summary_item.setFlags(summary_item.flags() | Qt.ItemIsUserCheckable)
             summary_item.setCheckState(0, Qt.Unchecked)
             summary_item.setData(0, Qt.UserRole, {"type": "summary", "data": node})
-            current_item.insertChild(0, summary_item)  # Insert at the top
-            self.project_tree.expandItem(current_item)  # Expand the parent item
+            current_item.insertChild(0, summary_item)
+            self.project_tree.expandItem(current_item)
             self.uuid_map[uuid + "_summary"] = summary_item
 
-        # Apply bold formatting to the "Summary" item if it exists
         if summary_item:
             font = summary_item.font(0)
             font.setBold(True)
