@@ -317,9 +317,9 @@ class EmbeddedPromptsPanel(QWidget):
         delete_btn = QPushButton(_('Delete'))
         delete_btn.setMaximumWidth(80)
         role_combo = QComboBox()
-        role_combo.addItems(['User', 'AI'])
+        role_combo.addItems(['User', 'Assistant'])
         normalized_role = (role or 'user').lower()
-        display_role = 'AI' if normalized_role in ('assistant', 'ai') else 'User'
+        display_role = 'Assistant' if normalized_role in ('assistant', 'ai') else 'User'
         role_combo.setCurrentText(display_role)
         controls_h.addWidget(delete_btn)
         controls_h.addWidget(role_combo)

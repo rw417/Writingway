@@ -37,9 +37,9 @@ def send_prompt_with_ui_integration(controller, prompt_config, user_input, addit
         bool: True if prompt was sent successfully, False otherwise
     """
     # Validation
-    if not user_input:
-        QMessageBox.warning(controller, _("LLM Prompt"), _("Please enter some action beats before sending."))
-        return False
+    # if not user_input:
+    #     QMessageBox.warning(controller, _("LLM Prompt"), _("Please enter some action beats before sending."))
+    #     return False
         
     if not prompt_config:
         QMessageBox.warning(controller, _("LLM Prompt"), _("Please select a prompt."))
@@ -273,57 +273,3 @@ def get_truncated_text(full_text, max_tokens_ratio=0.5):
     except Exception:
         # Fallback: simple character-based truncation
         return full_text[-int(len(full_text) * max_tokens_ratio):]
-
-
-def send_prompt_from_dialog(dialog_controller, prompt_config, user_input, additional_vars=None, 
-                           current_scene_text=None, extra_context=None, overrides=None):
-    """
-    Send a prompt from a dialog (like PromptPreviewDialog) without full UI integration.
-    
-    Args:
-        dialog_controller: The dialog controller (e.g., PromptPreviewDialog instance)
-        prompt_config: The prompt configuration
-        user_input: The user input text
-        additional_vars: Dictionary of additional variables
-        current_scene_text: Current scene text content
-        extra_context: Extra context
-        overrides: LLM provider/model overrides
-    
-    Returns:
-        str: The LLM response text, or error message
-    """
-    if not user_input:
-        QMessageBox.warning(dialog_controller, _("LLM Prompt"), _("No prompt text to send."))
-        return ""
-        
-    if not prompt_config:
-        QMessageBox.warning(dialog_controller, _("LLM Prompt"), _("No prompt configuration available."))
-        return ""
-    
-    try:
-        # Use the existing prompt_handler function for simple sending
-        final_prompt = prompt_handler.assemble_final_prompt(
-            prompt_config, user_input, additional_vars, current_scene_text, extra_context
-        )
-        
-        # Convert to string format for simple sending
-        if isinstance(final_prompt, list):
-            final_prompt_text = "\n\n".join(msg.get("content", "") for msg in final_prompt)
-        else:
-            final_prompt_text = str(final_prompt)
-        
-        # Send using the simple handler
-        result = prompt_handler.send_final_prompt(final_prompt_text, prompt_config, overrides)
-        
-        # Show result in a message box
-        if result:
-            QMessageBox.information(dialog_controller, _("LLM Response"), str(result))
-            return str(result)
-        else:
-            QMessageBox.warning(dialog_controller, _("LLM Response"), _("No response received from LLM."))
-            return ""
-            
-    except Exception as e:
-        error_msg = f"Error sending prompt: {e}"
-        QMessageBox.critical(dialog_controller, _("LLM Error"), error_msg)
-        return error_msg

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QStackedWidget, QHBoxLayout, QPushButton, 
                             QTextEdit, QComboBox, QSizePolicy,
-                            QFormLayout, QSplitter, QCheckBox)
+                            QFormLayout, QSplitter, QCheckBox, QLineEdit, QLabel)
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QVariant
 from settings.theme_manager import ThemeManager
@@ -112,11 +112,14 @@ class BottomStack(QWidget):
         self.apply_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/save.svg", self.tint_color))
         self.apply_button.setToolTip(_("Appends the LLM's output to your current scene"))
         self.apply_button.clicked.connect(self.controller.apply_preview)
-        self.include_prompt_checkbox = QCheckBox(_("Include Action Beats"))
-        self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
-        self.include_prompt_checkbox.setChecked(True)
+        # Add a text box that reads "Additional Instructions"
+        self.additional_instructions = QLineEdit()
+        # self.include_prompt_checkbox = QCheckBox(_("Include Action Beats"))
+        # self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
+        # self.include_prompt_checkbox.setChecked(True)
         preview_buttons.addWidget(self.apply_button)
-        preview_buttons.addWidget(self.include_prompt_checkbox)
+        preview_buttons.addWidget(QLabel(_("Additional Instructions:")))
+        # preview_buttons.addWidget(self.include_prompt_checkbox)
         preview_buttons.addStretch()
 
         action_layout = QHBoxLayout()
@@ -255,4 +258,34 @@ class BottomStack(QWidget):
             additional_vars=additional_vars, 
             current_scene_text=current_scene_text, 
             extra_context=extra_context)
+        
+        # Connect signal to handle edited prompt config
+        dialog.promptConfigReady.connect(self.handle_edited_prompt_config)
+        
         dialog.exec_()
+    
+    def handle_edited_prompt_config(self, modified_config):
+        """Handle the edited prompt config from preview dialog and trigger send."""
+        # Store the original prompt to restore it later
+        original_prompt = self.prose_prompt_panel.prompt
+        
+        try:
+            # Temporarily set the modified config
+            self.prose_prompt_panel.prompt = modified_config
+            
+            # Set a dummy space in action beats to satisfy validation
+            original_input = self.prompt_input.toPlainText()
+            self.prompt_input.setPlainText(" ")
+            
+            # Trigger the send button
+            self.send_button.click()
+            
+        finally:
+            # Restore the original prompt and input immediately
+            # Use QTimer to ensure this happens after the send operation starts
+            from PyQt5.QtCore import QTimer
+            def restore_original():
+                self.prose_prompt_panel.prompt = original_prompt
+                self.prompt_input.setPlainText(original_input)
+            
+            QTimer.singleShot(100, restore_original)  # Restore after 100ms
