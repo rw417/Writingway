@@ -10,6 +10,9 @@ env/
 venv/
 .venv/
 
+# Ignore archive files that I to keep old files before changes
+archive/
+
 # Ignore personal settings and API keys
 settings.json
 conversations.json
