@@ -6,6 +6,12 @@ from settings.theme_manager import ThemeManager
 import muse.prompt_handler as prompt_handler
 import tiktoken
 
+# gettext '_' fallback for static analysis / standalone edits
+try:
+    _
+except NameError:
+    _ = lambda s: s
+
 class PromptPreviewDialog(QDialog):
     def __init__(self, controller, conversation_payload=None, prompt_config=None, user_input=None, 
                  additional_vars=None, current_scene_text=None, extra_context=None, parent=None):
@@ -78,11 +84,14 @@ class PromptPreviewDialog(QDialog):
         if self.conversation_payload:
             sections = self.parse_conversation_payload()
         else:
-            self.final_prompt_text = prompt_handler.preview_final_prompt(
+            # Get messages list from assemble_final_prompt
+            messages_list = prompt_handler.assemble_final_prompt(
                 self.prompt_config, self.user_input, self.additional_vars,
                 self.current_scene_text, self.extra_context
             )
-            sections = self.parse_prompt_sections(self.final_prompt_text)
+            sections = self.parse_messages_list(messages_list)
+            # Create final_prompt_text for token counting
+            self.final_prompt_text = "\n\n".join(msg.get("content", "") for msg in messages_list)
 
         for header, content in sections.items():
             # Create a top-level item for the header
@@ -134,6 +143,23 @@ class PromptPreviewDialog(QDialog):
         if not sections:
             sections["Empty"] = "No content available"
 
+        return sections
+
+    def parse_messages_list(self, messages_list):
+        """Parse the messages list into sections based on message roles."""
+        sections = {}
+        
+        for i, message in enumerate(messages_list):
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role", "unknown").capitalize()
+            content = message.get("content", "")
+            header = f"{role} Message {i + 1}"
+            sections[header] = content
+        
+        if not sections:
+            sections["Empty"] = "No content available"
+        
         return sections
 
     def parse_prompt_sections(self, prompt_text):
