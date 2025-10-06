@@ -1,19 +1,26 @@
 import os
 import uuid
+from copy import deepcopy
 from typing import Dict, Optional, List
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QPushButton, QMenu, QInputDialog, QMessageBox, QLabel, QComboBox,
-    QSpinBox, QDoubleSpinBox, QApplication, QHeaderView
+    QSpinBox, QDoubleSpinBox, QApplication, QHeaderView, QScrollArea, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QFont, QBrush
 from muse.prompt_utils import get_prompt_categories, load_prompts, get_default_prompt, save_prompts
 from settings.llm_api_aggregator import WWApiAggregator
 from settings.settings_manager import WWSettingsManager
 from settings.theme_manager import ThemeManager
 from settings.provider_info_dialog import ProviderInfoDialog
+
+# gettext '_' fallback for static analysis / standalone edits
+# try:
+#     _
+# except NameError:
+#     _ = lambda s: s
 
 class CustomTextEdit(QTextEdit):
     """Custom QTextEdit to handle focus-out and hide events."""
@@ -61,6 +68,8 @@ class EmbeddedPromptsPanel(QWidget):
         self.init_ui()
         self.load_prompts()
         self.tree.expandAll()
+        # message widgets for current prompt (list of dicts with widgets)
+        self._message_widgets = []
 
     def init_ui(self) -> None:
         """Initialize the user interface components."""
@@ -68,6 +77,8 @@ class EmbeddedPromptsPanel(QWidget):
         self._setup_splitter()
         self._setup_tree_widget()
         self._setup_editor_widget()
+        # Messages area sits between the editor and the parameters panel
+        self._setup_messages_area()
         self._setup_parameters_panel()
         self.update_provider_list()
 
@@ -105,21 +116,73 @@ class EmbeddedPromptsPanel(QWidget):
         self.splitter.setStretchFactor(0, 1)
 
     def _setup_editor_widget(self) -> None:
-        """Set up the editor widget for prompt text."""
+        """Set up the editor widget for prompt text and messages in a single scroll area."""
         self.editor_widget = QWidget()
         right_layout = QVBoxLayout(self.editor_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.editor = CustomTextEdit(self)  # Use custom QTextEdit subclass
+
+        # Container for main editor and messages (for scroll area)
+        self.editor_and_messages_container = QWidget()
+        self.editor_and_messages_layout = QVBoxLayout(self.editor_and_messages_container)
+        self.editor_and_messages_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add 'Role: System' label above the main editor
+        self.system_role_label = QLabel("Role: System")
+        self.system_role_label.setStyleSheet("font-weight: bold; margin-bottom: 2px;")
+        self.editor_and_messages_layout.addWidget(self.system_role_label)
+
+        # Main editor with resizable handle
+        self.editor = CustomTextEdit(self)
+        self.editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        self.editor.setMinimumHeight(200)
+        self.editor.setMaximumHeight(1000)
+        self.editor_resize_grip = QWidget()
+        self.editor_resize_grip.setFixedHeight(8)
+        self.editor_resize_grip.setCursor(Qt.SizeVerCursor)
+        self.editor_resize_grip.setStyleSheet("background: #ccc;")
+        self.editor_and_messages_layout.addWidget(self.editor)
+        self.editor_and_messages_layout.addWidget(self.editor_resize_grip)
+
+        # Replicate button (not in scroll area)
         self.replicate_button = QPushButton(_("Replicate"))
         self.replicate_button.setToolTip(_("This is a read-only default prompt. Create a copy to edit it."))
         self.replicate_button.clicked.connect(self._replicate_prompt)
         self.replicate_button.hide()
-        
-        right_layout.addWidget(self.editor)
+
+        # Scroll area for main editor and messages
+        self.messages_scroll = QScrollArea()
+        self.messages_scroll.setWidgetResizable(True)
+        self.messages_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.messages_scroll.setWidget(self.editor_and_messages_container)
+        self.messages_scroll.setMinimumHeight(200)
+        self.messages_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        right_layout.addWidget(self.messages_scroll)
         right_layout.addWidget(self.replicate_button)
         self.splitter.addWidget(self.editor_widget)
         self.splitter.setStretchFactor(1, 2)
+
+        # Mouse events for resizing main editor
+        self._editor_resizing = False
+        self.editor_resize_grip.mousePressEvent = self._editor_resize_mouse_press
+        self.editor_resize_grip.mouseMoveEvent = self._editor_resize_mouse_move
+        self.editor_resize_grip.mouseReleaseEvent = self._editor_resize_mouse_release
+
+    def _editor_resize_mouse_press(self, event):
+        if event.button() == Qt.LeftButton:
+            self._editor_resizing = True
+            self._editor_resize_start_pos = event.globalPos().y()
+            self._editor_resize_start_height = self.editor.height()
+
+    def _editor_resize_mouse_move(self, event):
+        if self._editor_resizing:
+            delta = event.globalPos().y() - self._editor_resize_start_pos
+            new_height = max(60, min(self._editor_resize_start_height + delta, 1000))
+            self.editor.setMinimumHeight(new_height)
+            self.editor.setMaximumHeight(new_height)
+
+    def _editor_resize_mouse_release(self, event):
+        self._editor_resizing = False
 
     def _setup_parameters_panel(self) -> None:
         """Set up the parameters panel for provider and model settings."""
@@ -205,13 +268,191 @@ class EmbeddedPromptsPanel(QWidget):
         self.temp_spin.setSingleStep(0.1)
         self.temp_spin.setValue(0.7)
         self.temp_spin.valueChanged.connect(self._on_parameter_changed)
-        temp_layout.addWidget(self.temp_label)
-        temp_layout.addWidget(self.temp_spin)
-        
+        # Place temperature and Add Message button side-by-side
+        temp_inner_h = QHBoxLayout()
+        temp_vbox = QVBoxLayout()
+        temp_vbox.addWidget(self.temp_label)
+        temp_vbox.addWidget(self.temp_spin)
+        temp_inner_h.addLayout(temp_vbox)
+
+        # Add Message button
+        self.add_message_button = QPushButton(_("Add Message"))
+        self.add_message_button.setToolTip(_("Add an additional text message input below the editor"))
+        self.add_message_button.clicked.connect(self._add_message_input)
+        temp_inner_h.addWidget(self.add_message_button)
+
+        temp_layout.addLayout(temp_inner_h)
+
         settings_group.addLayout(tokens_layout)
         settings_group.addLayout(temp_layout)
         settings_group.addStretch()
         return settings_group
+
+    def _setup_messages_area(self) -> None:
+        """Create the container where additional message inputs will be appended (now inside editor_and_messages_container)."""
+        self.messages_container = QWidget()
+        self.messages_layout = QVBoxLayout(self.messages_container)
+        self.messages_layout.setContentsMargins(0, 0, 0, 0)
+        self.messages_layout.addStretch()
+        # Add messages_container to the shared scroll area container
+        self.editor_and_messages_layout.addWidget(self.messages_container)
+
+    def _add_message_input(self) -> None:
+        """Append an empty message UI (role dropdown + delete button + QTextEdit)."""
+        self._create_message_widget(role='user', text='')
+        # New message editable -> update pending changes and schedule save
+        self._update_pending_changes()
+        self.save_timer.start()
+
+    def _create_message_widget(self, role: str = 'user', text: str = '') -> None:
+        """Create the message UI and append it to the messages area, with a resizable handle."""
+        # Container for one message (vertical: controls row above, editor below, handle at bottom)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Top row: Delete button and role selector
+        controls_h = QHBoxLayout()
+        controls_h.setContentsMargins(0, 0, 0, 0)
+        delete_btn = QPushButton(_('Delete'))
+        delete_btn.setMaximumWidth(80)
+        role_combo = QComboBox()
+        role_combo.addItems(['User', 'AI'])
+        normalized_role = (role or 'user').lower()
+        display_role = 'AI' if normalized_role in ('assistant', 'ai') else 'User'
+        role_combo.setCurrentText(display_role)
+        controls_h.addWidget(delete_btn)
+        controls_h.addWidget(role_combo)
+        controls_h.addStretch()
+
+        # Editor
+        edit = QTextEdit()
+        edit.setPlainText(text)
+        edit.setPlaceholderText(_('New message...'))
+        edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        edit.setMinimumHeight(200)
+        edit.setMaximumHeight(1000)
+
+        # Resizable handle
+        resize_grip = QWidget()
+        resize_grip.setFixedHeight(8)
+        resize_grip.setCursor(Qt.SizeVerCursor)
+        resize_grip.setStyleSheet("background: #ccc;")
+
+        container_layout.addLayout(controls_h)
+        container_layout.addWidget(edit)
+        container_layout.addWidget(resize_grip)
+
+        # Insert before the stretch
+        count = self.messages_layout.count()
+        insert_index = count - 1 if count > 0 else count
+        self.messages_layout.insertWidget(insert_index, container)
+
+        # wire delete action
+        def _on_delete():
+            try:
+                self.messages_layout.removeWidget(container)
+                container.deleteLater()
+            except Exception:
+                pass
+            for i, w in enumerate(self._message_widgets):
+                if w['container'] is container:
+                    del self._message_widgets[i]
+                    break
+            self._update_pending_changes()
+            self.save_timer.start()
+        delete_btn.clicked.connect(_on_delete)
+
+        # wire updates from edit/role to schedule a save
+        def _on_widget_changed():
+            self._update_pending_changes()
+            self.save_timer.start()
+        edit.textChanged.connect(_on_widget_changed)
+        role_combo.currentTextChanged.connect(lambda _: _on_widget_changed())
+
+        # Resizing logic for message edit
+        def _resize_mouse_press(event, edit=edit):
+            if event.button() == Qt.LeftButton:
+                edit._resizing = True
+                edit._resize_start_pos = event.globalPos().y()
+                edit._resize_start_height = edit.height()
+        def _resize_mouse_move(event, edit=edit):
+            if getattr(edit, '_resizing', False):
+                delta = event.globalPos().y() - edit._resize_start_pos
+                new_height = max(40, min(edit._resize_start_height + delta, 1000))
+                edit.setMinimumHeight(new_height)
+                edit.setMaximumHeight(new_height)
+        def _resize_mouse_release(event, edit=edit):
+            edit._resizing = False
+        resize_grip.mousePressEvent = _resize_mouse_press
+        resize_grip.mouseMoveEvent = _resize_mouse_move
+        resize_grip.mouseReleaseEvent = _resize_mouse_release
+
+        self._message_widgets.append({
+            'container': container,
+            'edit': edit,
+            'role_combo': role_combo,
+            'delete_btn': delete_btn,
+        })
+        edit.setFocus()
+
+    def _clear_messages_area(self) -> None:
+        """Remove all message widgets from the messages area (keeps the stretch)."""
+        # remove widgets in reverse
+        for w in list(self._message_widgets):
+            try:
+                self.messages_layout.removeWidget(w['container'])
+                w['container'].deleteLater()
+            except Exception:
+                pass
+        self._message_widgets = []
+
+    def _populate_messages_from_prompt(self, prompt: Dict) -> None:
+        """Fill the messages area from the given prompt's data (non-destructive)."""
+        self._clear_messages_area()
+        msgs = prompt.get('messages', []) if isinstance(prompt, dict) else []
+
+        # First message populates the main editor (assumed to be system)
+        system_text = ''
+        if msgs:
+            first_message = msgs[0]
+            system_text = first_message.get('content', first_message.get('text', ''))
+            remaining = msgs[1:]
+        else:
+            remaining = []
+
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(system_text)
+        self.editor.blockSignals(False)
+
+        for m in remaining:
+            role = m.get('role', 'user')
+            text = m.get('content', m.get('text', ''))
+            self._create_message_widget(role=role, text=text)
+
+    def _collect_messages_to_list(self) -> List[Dict]:
+        """Collect messages from all text boxes into a serializable list of dicts with correct roles."""
+        out = []
+        # First text box: main editor, always role 'system'
+        system_text = self.editor.toPlainText()
+        out.append({
+            'role': 'system',
+            'content': system_text
+        })
+        # Subsequent message widgets
+        for w in self._message_widgets:
+            role_dropdown = w['role_combo'].currentText()
+            if role_dropdown == 'User':
+                role = 'user'
+            else:
+                role = 'assistant'
+            text = w['edit'].toPlainText()
+            if text.strip():
+                out.append({
+                    'role': role,
+                    'content': text
+                })
+        return out
 
     def update_provider_list(self) -> None:
         """Update the provider combo box with available LLM providers."""
@@ -341,8 +582,8 @@ class EmbeddedPromptsPanel(QWidget):
             self._update_pending_changes()
         self._apply_pending_changes()  # Save any pending changes before switching
         self.current_prompt_item = current
-        self.replicate_button.hide()
-        self.parameters_panel.hide()
+        self.replicate_button.show()
+        self.parameters_panel.show()
         
         if not current:
             return
@@ -356,12 +597,8 @@ class EmbeddedPromptsPanel(QWidget):
             return
         
         is_default = data.get("default", False)
-        self.editor.blockSignals(True)  # We are loading saved data, so this is not an edit
-        self.editor.setPlainText(data.get("text", ""))
+        self._populate_messages_from_prompt(data)
         self.editor.setReadOnly(is_default)
-        self.editor.blockSignals(False)
-        if is_default:
-            self.replicate_button.show()
         
         # Use SettingsManager for default prompts, otherwise use prompt data
         active_provider = WWSettingsManager.get_active_llm_name()
@@ -381,7 +618,16 @@ class EmbeddedPromptsPanel(QWidget):
         
         self.max_tokens_spin.setValue(data.get("max_tokens", 2000))
         self.temp_spin.setValue(data.get("temperature", 0.7))
-        
+        # Messages already populated above; ensure additional widgets obey read-only state for defaults
+        for widget_group in self._message_widgets:
+            widget_group['edit'].setReadOnly(is_default)
+            widget_group['role_combo'].setEnabled(not is_default)
+            widget_group['delete_btn'].setEnabled(not is_default)
+
+        # Show/hide add message button based on whether prompt is default
+        if hasattr(self, 'add_message_button'):
+            self.add_message_button.setVisible(not is_default)
+
         self.parameters_panel.setVisible(True)
         self.provider_combo.setEnabled(not is_default)
         self.model_combo.setEnabled(not is_default)
@@ -413,42 +659,49 @@ class EmbeddedPromptsPanel(QWidget):
         self.save_timer.start()
 
     def _update_pending_changes(self) -> None:
-        """Update pending changes with current UI values."""
+        """Update pending changes with current UI values. Do not save main editor to 'text', only to messages."""
         if not self.current_prompt_item:
             return
-        
+
         data = self.current_prompt_item.data(0, Qt.UserRole)
         prompt_id = data.get("id")
-        
+
         # Create or update pending changes
         pending_data = self.pending_changes.get(prompt_id, data.copy())
-        
+
         updated = False
-        new_text = self.editor.toPlainText()
-        if new_text != pending_data.get("text"):
-            pending_data["text"] = new_text
+
+        # Remove 'text' field if present (do not save main editor to 'text')
+        if 'text' in pending_data:
+            del pending_data['text']
             updated = True
-        
+
         new_provider = self._get_provider_config()
         if new_provider != pending_data.get("provider"):
             pending_data["provider"] = new_provider
             updated = True
-        
+
         new_model = self.model_combo.currentText()
         if new_model != pending_data.get("model"):
             pending_data["model"] = new_model
             updated = True
-        
+
         new_max_tokens = self.max_tokens_spin.value()
         if new_max_tokens != pending_data.get("max_tokens"):
             pending_data["max_tokens"] = new_max_tokens
             updated = True
-        
+
         new_temperature = self.temp_spin.value()
         if new_temperature != pending_data.get("temperature"):
             pending_data["temperature"] = new_temperature
             updated = True
-        
+
+        # Collect messages from main editor and message widgets
+        new_messages = self._collect_messages_to_list()
+        if new_messages != pending_data.get('messages', []):
+            pending_data['messages'] = new_messages
+            updated = True
+
         if updated:
             self.pending_changes[prompt_id] = pending_data
             self.current_prompt_item.setToolTip(0, self._create_prompt_tooltip(pending_data))
@@ -477,11 +730,11 @@ class EmbeddedPromptsPanel(QWidget):
             
             saved_data = self.prompts_data[category][prompt_index]
             # Check for actual changes
-            if (pending_data.get("text") != saved_data.get("text") or
-                pending_data.get("provider") != saved_data.get("provider") or
+            if (pending_data.get("provider") != saved_data.get("provider") or
                 pending_data.get("model") != saved_data.get("model") or
                 pending_data.get("max_tokens") != saved_data.get("max_tokens") or
-                pending_data.get("temperature") != saved_data.get("temperature")):
+                pending_data.get("temperature") != saved_data.get("temperature") or
+                pending_data.get("messages", []) != saved_data.get("messages", [])):
                 
                 self.prompts_data[category][prompt_index].update(pending_data)
                 # Update tree item if it's the current (or find it to update tooltip/data)
@@ -508,6 +761,9 @@ class EmbeddedPromptsPanel(QWidget):
 
     def _create_prompt_tooltip(self, prompt: Dict) -> str:
         """Create a tooltip string for a prompt."""
+        messages = prompt.get("messages", [])
+        system_preview = messages[0].get("content", "") if messages else ""
+
         if prompt.get("default", False):
             active_provider = WWSettingsManager.get_active_llm_name()
             active_config = WWSettingsManager.get_active_llm_config() or {}
@@ -517,7 +773,7 @@ class EmbeddedPromptsPanel(QWidget):
                 f"Model: {active_model}\n"
                 f"Max Tokens: {prompt.get('max_tokens', 2000)}\n"
                 f"Temperature: {prompt.get('temperature', 0.7)}\n"
-                f"Text: {prompt.get('text', '')}\n"
+                f"System Message: {system_preview}\n"
                 f"Default prompt (read-only): Uses default LLM settings."
             )
         else:
@@ -526,7 +782,7 @@ class EmbeddedPromptsPanel(QWidget):
                 f"Model: {prompt.get('model', WWSettingsManager.get_active_llm_config().get('model', 'Unknown'))}\n"
                 f"Max Tokens: {prompt.get('max_tokens', 2000)}\n"
                 f"Temperature: {prompt.get('temperature', 0.7)}\n"
-                f"Text: {prompt.get('text', '')}"
+                f"System Message: {system_preview}"
             )
         return tooltip
 
@@ -575,12 +831,14 @@ class EmbeddedPromptsPanel(QWidget):
         new_id = str(uuid.uuid4())
         new_prompt = {
             "name": name,
-            "text": "",
             "default": False,
             "provider": self._get_provider_config(),
             "model": self.model_combo.currentText(),
             "max_tokens": 2000,
             "temperature": 0.7,
+            "messages": [
+                {"role": "system", "content": ""}
+            ],
             "type": "prompt",
             "id": new_id
         }
@@ -690,7 +948,7 @@ class EmbeddedPromptsPanel(QWidget):
             return
         
         new_name = new_name.strip()
-        new_prompt = data.copy()
+        new_prompt = deepcopy(data)
         new_prompt.update({"name": new_name, "default": False, "id": str(uuid.uuid4())})
 
         parent_item = self.current_prompt_item.parent()

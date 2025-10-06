@@ -5,78 +5,90 @@ import os
 from langchain.prompts import PromptTemplate
 from settings.llm_api_aggregator import WWApiAggregator
 
+DEFAULT_PROMPT_FALLBACK = "Write a story chapter based on the following user input"
+
+
+
+
+def _format_prompt_messages(messages, variables=None):
+    """Combine the content of all message dicts in order, substituting variables."""
+    if not isinstance(messages, list):
+        return ""
+    variables = variables or {}
+    evaluated = []
+    for entry in messages:
+        if not isinstance(entry, dict):
+            continue
+        content = (entry.get("content", "").strip())
+        if not content:
+            continue
+        try:
+            content = content.format(**variables)
+        except Exception:
+            pass  # If a variable is missing, leave as-is
+        evaluated.append(content)
+    return "\n\n".join(evaluated).strip()
+
+
+try:
+    _
+except NameError:
+    _ = lambda s: s
+
 
 def assemble_final_prompt(prompt_config, user_input, additional_vars=None, current_scene_text=None, extra_context=None):
     """
-    Assemble a final prompt using a configurable PromptTemplate.
-    
-    Args:
-        prompt_config (dict): Configuration from prompts.json with 'text' and optional 'variables'.
-        user_input (str): The user's input (e.g., action beats).
-        additional_vars (dict, optional): Extra variables to inject (e.g., {'pov': 'First Person'}).
-        current_scene_text (str, optional): Current scene content.
-        extra_context (str, optional): Additional context from the context panel.
-    
-    Returns:
-        PromptTemplate: The assembled prompt ready for invocation.
+    Build a chat-style messages list for chat-completion APIs.
+    - prompt_config["messages"] entries are formatted with variables and kept in order.
+    - extra_context, current_scene_text, user_input and additional_vars are appended as user messages.
+    Returns: List[Dict[str, str]] where each dict has "role" and "content".
     """
-    # Extract prompt text and variables from config
-    prompt_text = prompt_config.get("text", "Write a story chapter based on the following user input")
-    expected_vars = prompt_config.get("variables", [])  # e.g., ["pov", "tense"]
+    # Base messages from the prompt config, with variable substitution
+    prompt_messages = prompt_config.get("messages") or []
 
-    # Base template structure
-    base_template = """
-    ### System
-    {system_prompt}
+    # Prepare variables for substitution
+    variables = dict(additional_vars or {})
+    variables.update({
+        "user_input": user_input or "",
+        "context": extra_context or "",
+        "story_so_far": current_scene_text or ""
+    })
 
-    ### Context
-    {context}
+    evaluated_messages = []
+    for entry in prompt_messages:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role", "user")
+        content = (entry.get("content", "") or "").strip()
+        if not content:
+            continue
+        try:
+            content = content.format(**variables)
+        except Exception:
+            # If formatting fails, keep raw content
+            pass
+        evaluated_messages.append({"role": role, "content": content})
 
-    ### Story Up-to-now
-    {story_so_far}
+    # # Append extra pieces as user messages (if present)
+    # if extra_context:
+    #     evaluated_messages.append({"role": "user", "content": extra_context})
+    # if current_scene_text:
+    #     evaluated_messages.append({"role": "user", "content": current_scene_text})
+    # if additional_vars:
+    #     # Represent additional_vars as a compact user message
+    #     kv_lines = "\n".join(f"{k}: {v}" for k, v in (additional_vars.items()))
+    #     if kv_lines:
+    #         evaluated_messages.append({"role": "user", "content": kv_lines})
+    # if user_input:
+    #     evaluated_messages.append({"role": "user", "content": user_input})
 
-    ### User
-    {user_input}
-    """
-
-    # Dynamically append sections for additional variables
-    if additional_vars:
-        for var_name, var_value in additional_vars.items():
-            base_template += f"\n### {var_name.capitalize()}\n{{{var_name}}}"
-    
-#    full_prompt_text = prompt_text + "\n" + base_template
-
-    # Define default variables
-    default_vars = {
-        "system_prompt": prompt_text,
-        "context": extra_context or "No additional context provided.",
-        "story_so_far": current_scene_text or "No previous story content.",
-        "user_input": user_input
-    }
-
-    # Merge additional variables (e.g., from UI settings or ad-hoc tags)
-    if additional_vars:
-        default_vars.update(additional_vars)
-
-    # Create the PromptTemplate with all possible variables
-    prompt_template = PromptTemplate(
-        input_variables=list(set(expected_vars + list(default_vars.keys()))),
-        template=base_template # was full_prompt_text
-    )
-
-    # Validate that all required variables are provided
-    missing_vars = [var for var in prompt_template.input_variables if var not in default_vars]
-    if missing_vars:
-        raise ValueError(_("Missing variables for prompt: {}").format(missing_vars))
-
-    # Invoke the template with the variables
-    final_prompt = prompt_template.invoke(default_vars)
-    return final_prompt
+    return evaluated_messages
 
 def preview_final_prompt(prompt_config, user_input, additional_vars=None, current_scene_text=None, extra_context=None):
-    """Generate a preview of the final prompt as a string."""
-    final_prompt = assemble_final_prompt(prompt_config, user_input, additional_vars, current_scene_text, extra_context)
-    return final_prompt.text  # Return as plain text for display
+    """Generate a plain-text preview by concatenating the built messages' contents."""
+    messages = assemble_final_prompt(prompt_config, user_input, additional_vars, current_scene_text, extra_context)
+    # Preview shows combined content only (no role headings)
+    return "\n\n".join(m.get("content", "") for m in messages).strip()
 
 def send_final_prompt(final_prompt, prompt_config=None, overrides=None):
     """

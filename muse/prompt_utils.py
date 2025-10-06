@@ -42,28 +42,40 @@ def get_default_prompt(style: str) -> Dict:
     }
     return {
         "name": _("Default {} Prompt").format(style),
-        "text": default_prompts.get(style, ""),
+        "messages": [
+            {
+                "role": "system",
+                "content": default_prompts.get(style, "")
+            }
+        ],
         "max_tokens": 2000,
         "temperature": 0.7,
         "default": True,
+        "type": "prompt",
         "id": f"default_{style.lower()}"
     }
 
 def load_prompts(style: Optional[str] = None) -> Dict[str, List[Dict]]:
     """Load prompts from the prompts.json file."""
     try:
-        return _load_prompt_style(style)
+        data = _load_prompt_style(style)
+        if style:
+            return _normalize_prompt_collection(data)
+        return {category: _normalize_prompt_collection(prompts)
+                for category, prompts in data.items()}
     except Exception as e:
         print(f"Error loading {style or 'all'} prompts: {e}")
-        return {} if not style else [get_default_prompt(style)]
+        return {} if not style else _normalize_prompt_collection([get_default_prompt(style)])
 
 def save_prompts(prompts_data: Dict[str, List[Dict]], prompts_file: str, backup_file: str) -> bool:
     """Save prompts to the specified file and create a backup."""
     try:
+        normalized = {category: _normalize_prompt_collection(prompts)
+                      for category, prompts in prompts_data.items()}
         with open(prompts_file, "w", encoding="utf-8") as f:
-            json.dump(prompts_data, f, indent=4)
+            json.dump(normalized, f, indent=4)
         with open(backup_file, "w", encoding="utf-8") as f:
-            json.dump(prompts_data, f, indent=4)
+            json.dump(normalized, f, indent=4)
         return True
     except Exception as e:
         print(f"Error saving prompts: {e}")
@@ -82,7 +94,38 @@ def _load_prompt_style(style: Optional[str]) -> Dict[str, List[Dict]]:
     if os.path.exists(filepath):
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-    
+
     if style:
         return data.get(style, [])
     return data
+
+
+def _normalize_prompt_collection(prompts: List[Dict]) -> List[Dict]:
+    """Ensure each prompt contains a messages list and no legacy text field."""
+    normalized: List[Dict] = []
+    for prompt in prompts or []:
+        prompt_copy = dict(prompt)
+        text_value = prompt_copy.pop("text", None)
+
+        messages = prompt_copy.get("messages") or []
+        if not messages and text_value is not None:
+            messages = [{"role": "system", "content": text_value}]
+
+        normalized_messages: List[Dict] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role", "system")
+            content = message.get("content", message.get("text", ""))
+            normalized_messages.append({
+                "role": role,
+                "content": content
+            })
+
+        if not normalized_messages:
+            normalized_messages.append({"role": "system", "content": text_value or ""})
+
+        prompt_copy["messages"] = normalized_messages
+        normalized.append(prompt_copy)
+
+    return normalized

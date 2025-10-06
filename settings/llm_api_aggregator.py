@@ -712,11 +712,14 @@ class LLMAPIAggregator:
     
     def send_prompt_to_llm(
         self, 
-        final_prompt: str, 
+        final_prompt: Union[str, List[Dict[str, str]]], 
         overrides: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
-        """Send a prompt to the active LLM and return the generated text."""
+        """Send a prompt to the active LLM and return the generated text.
+        final_prompt may be a string (existing behavior) or a list of message dicts
+        like [{'role': 'system','content':'...'}, ...] for chat-style calls.
+        """
         overrides = overrides or {}
         
         provider_name = overrides.get("provider") or WWSettingsManager.get_active_llm_name()
@@ -735,36 +738,52 @@ class LLMAPIAggregator:
             overrides["model"] = provider.get_current_model()
         
         llm = provider.get_llm_instance(overrides)
-        
-        if conversation_history:
+
+        # If final_prompt is already a list of message dicts, treat as chat request
+        if isinstance(final_prompt, list):
             from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-            
             messages = []
-            for message in conversation_history:
-                role = message.get("role", "").lower()
+            for message in final_prompt:
+                role = (message.get("role") or "").lower()
                 content = message.get("content", "")
-                
                 if role == "system":
                     messages.append(SystemMessage(content=content))
-                elif role == "user" or role == "human":
+                elif role in ("user", "human"):
                     messages.append(HumanMessage(content=content))
-                elif role == "assistant" or role == "ai":
+                elif role in ("assistant", "ai"):
                     messages.append(AIMessage(content=content))
-            
+            response = llm.invoke(messages)
+            return response.content
+
+        # If a conversation_history was provided, convert and append the prompt as a HumanMessage
+        if conversation_history:
+            from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+            messages = []
+            for message in conversation_history:
+                role = (message.get("role") or "").lower()
+                content = message.get("content", "")
+                if role == "system":
+                    messages.append(SystemMessage(content=content))
+                elif role in ("user", "human"):
+                    messages.append(HumanMessage(content=content))
+                elif role in ("assistant", "ai"):
+                    messages.append(AIMessage(content=content))
             messages.append(HumanMessage(content=final_prompt))
-            
             response = llm.invoke(messages)
             return response.content
         else:
+            # fallback: keep existing completion-style behavior
             return llm.invoke(final_prompt).content
 
     def stream_prompt_to_llm(
         self, 
-        final_prompt: str, 
+        final_prompt: Union[str, List[Dict[str, str]]], 
         overrides: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None
     ):
-        """Stream a prompt to the active LLM and yield the generated text."""
+        """Stream a prompt to the active LLM and yield the generated text.
+        Supports chat-style `final_prompt` (list of dicts) or string fallback.
+        """
         logging.debug(f"Starting stream_prompt_to_llm, interrupt_flag: {self.interrupt_flag.is_set()}")
         overrides = overrides or {}
         
@@ -792,55 +811,60 @@ class LLMAPIAggregator:
             llm = provider.get_llm_instance(overrides)
         except ValueError as e:
             raise ValueError(f"Failed to initialize LLM: {e}")
-        
+
         self.is_streaming = True
         try:
-            if conversation_history:
+            # chat-style list of messages
+            if isinstance(final_prompt, list):
                 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-                
                 messages = []
-                for message in conversation_history:
-                    role = message.get("role", "").lower()
+                for message in final_prompt:
+                    role = (message.get("role") or "").lower()
                     content = message.get("content", "")
-                    
                     if role == "system":
                         messages.append(SystemMessage(content=content))
-                    elif role == "user" or role == "human":
+                    elif role in ("user", "human"):
                         messages.append(HumanMessage(content=content))
-                    elif role == "assistant" or role == "ai":
+                    elif role in ("assistant", "ai"):
                         messages.append(AIMessage(content=content))
-                
-                messages.append(HumanMessage(content=final_prompt))
-                
                 stream = llm.stream(messages)
                 for chunk in stream:
                     if self.interrupt_flag.is_set():
-                        logging.debug("Stream interrupted by flag")
                         break
                     yield chunk.content
+
+            elif conversation_history:
+                from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+                messages = []
+                for message in conversation_history:
+                    role = (message.get("role") or "").lower()
+                    content = message.get("content", "")
+                    if role == "system":
+                        messages.append(SystemMessage(content=content))
+                    elif role in ("user", "human"):
+                        messages.append(HumanMessage(content=content))
+                    elif role in ("assistant", "ai"):
+                        messages.append(AIMessage(content=content))
+                messages.append(HumanMessage(content=final_prompt))
+                stream = llm.stream(messages)
+                for chunk in stream:
+                    if self.interrupt_flag.is_set():
+                        break
+                    yield chunk.content
+
             else:
+                # fallback to string streaming
                 stream = llm.stream(final_prompt)
                 for chunk in stream:
                     if self.interrupt_flag.is_set():
-                        logging.debug("Stream interrupted by flag")
                         break
                     yield chunk.content
         except Exception as e:
             logging.error(f"Streaming error: {e}")
             raise
         finally:
-            logging.debug(f"Stream cleanup, setting is_streaming=False, clearing interrupt_flag")
             self.is_streaming = False
             self.interrupt_flag.clear()
-            logging.debug(f"After cleanup, interrupt_flag: {self.interrupt_flag.is_set()}")
-
-    def interrupt(self):
-        """Interrupt the streaming process."""
-        if self.is_streaming:
-            logging.debug(f"Interrupting stream, setting interrupt_flag")
-            self.interrupt_flag.set()
-        else:
-            logging.debug("Interrupt called but no active stream")
 
 WWApiAggregator = LLMAPIAggregator()
 

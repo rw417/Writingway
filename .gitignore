@@ -1,5 +1,6 @@
 # Ignore Python cache and compiled files
 __pycache__/
+*/_pycache_/
 *.pyc
 *.pyo
 *.pyd
@@ -23,6 +24,9 @@ conversations.json
 # Ignore project-specific files (optional)
 Projects/
 *.txt
+
+# Ignore tests
+tests/
 
 # Ignore Windows/Mac system files
 .DS_Store

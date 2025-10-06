@@ -228,10 +228,17 @@ class BottomStack(QWidget):
             self.context_toggle_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book-open.svg"))
 
     def get_additional_vars(self):
+        action_beats = self.prompt_input.toPlainText().strip()
+        current_scene_text = self.scene_editor.editor.toPlainText().strip() if self.controller.project_tree.tree.currentItem() and self.controller.project_tree.get_item_level(self.controller.project_tree.tree.currentItem()) >= 2 else None
+        extra_context = self.context_panel.get_selected_context_text()
+
         return {
             "pov": self.pov_combo.currentText(),
             "pov_character": self.pov_character_combo.currentText(),
-            "tense": self.tense_combo.currentText()
+            "tense": self.tense_combo.currentText(),
+            "story_so_far": current_scene_text,
+            "instructions": action_beats,   
+            "context": extra_context,
         }
     
     def preview_prompt(self):
