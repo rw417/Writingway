@@ -706,6 +706,16 @@ class LLMAPIAggregator:
         self.is_streaming = False
         logging.debug("LLMAPIAggregator initialized")
     
+    def interrupt(self):
+        """Interrupt any ongoing LLM operations."""
+        logging.debug("LLM interruption requested")
+        self.interrupt_flag.set()
+        self.is_streaming = False
+    
+    def reset_interrupt_flag(self):
+        """Reset the interrupt flag for new operations."""
+        self.interrupt_flag.clear()
+    
     def get_llm_providers(self) -> List[str]:
         """Dynamically returns a list of supported LLM provider names."""
         return [cls().provider_name for cls in LLMProviderBase.__subclasses__()]
@@ -720,6 +730,9 @@ class LLMAPIAggregator:
         final_prompt may be a string (existing behavior) or a list of message dicts
         like [{'role': 'system','content':'...'}, ...] for chat-style calls.
         """
+        # Reset interrupt flag for new operation
+        self.reset_interrupt_flag()
+        
         overrides = overrides or {}
         
         provider_name = overrides.get("provider") or WWSettingsManager.get_active_llm_name()
@@ -785,6 +798,10 @@ class LLMAPIAggregator:
         Supports chat-style `final_prompt` (list of dicts) or string fallback.
         """
         logging.debug(f"Starting stream_prompt_to_llm, interrupt_flag: {self.interrupt_flag.is_set()}")
+        
+        # Reset interrupt flag for new operation
+        self.reset_interrupt_flag()
+        
         overrides = overrides or {}
         
         provider_name = overrides.get("provider") or WWSettingsManager.get_active_llm_name()

@@ -36,8 +36,17 @@ from util.whisper_app import WhisperApp
 from util.ia_window import IAWindow
 from muse.prompts_window import PromptsWindow
 from .token_limit_dialog import TokenLimitDialog
+from util.llm_helpers import (send_prompt_with_ui_integration, gather_prompt_data_from_ui, 
+                              cleanup_llm_worker, stop_llm_worker, handle_llm_completion, 
+                              update_llm_text, retry_llm_with_content, get_truncated_text)
 from gettext import pgettext
 import muse.prompt_handler as prompt_handler
+
+# gettext '_' fallback for static analysis / standalone edits
+try:
+    _
+except NameError:
+    _ = lambda s: s
 
 import PyQt5
 pyqt_dir = os.path.dirname(PyQt5.__file__)
@@ -609,29 +618,21 @@ class ProjectWindow(QMainWindow):
         self.bottom_stack.tense_combo.setToolTip(pgettext("verb_tense", "Tense: {}").format(self.model.settings['global_tense']))
 
     def send_prompt(self):
-        action_beats = self.bottom_stack.prompt_input.toPlainText().strip()
-        if not action_beats:
-            QMessageBox.warning(self, _("LLM Prompt"), _("Please enter some action beats before sending."))
-            return
-        prose_config = self.bottom_stack.prose_prompt_panel.get_prompt()
-        if not prose_config:
-            QMessageBox.warning(self, _("LLM Prompt"), _("Please select a prompt."))
-            return
-        overrides = self.bottom_stack.prose_prompt_panel.get_overrides()
-        additional_vars = self.bottom_stack.get_additional_vars()
-        current_scene_text = self.scene_editor.editor.toPlainText().strip() if self.project_tree.tree.currentItem() and self.project_tree.get_item_level(self.project_tree.tree.currentItem()) >= 2 else None
-        extra_context = self.bottom_stack.context_panel.get_selected_context_text()
-        final_prompt = prompt_handler.assemble_final_prompt(prose_config, action_beats, additional_vars, current_scene_text, extra_context)
-        self.bottom_stack.preview_text.clear()
-        self.bottom_stack.send_button.setEnabled(False)
-        self.bottom_stack.preview_text.setReadOnly(True)
-        QApplication.processEvents()
-        self.stop_llm()
-        self.worker = LLMWorker(final_prompt, overrides)
-        self.worker.data_received.connect(self.update_text)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.token_limit_exceeded.connect(self.handle_token_limit_error)
-        self.worker.start()
+        # Gather all prompt data from UI
+        prompt_data = gather_prompt_data_from_ui(
+            self.bottom_stack, self.scene_editor, self.project_tree
+        )
+        
+        # Send prompt using helper function
+        send_prompt_with_ui_integration(
+            self,
+            prompt_data['prompt_config'],
+            prompt_data['user_input'],
+            prompt_data['additional_vars'],
+            prompt_data['current_scene_text'],
+            prompt_data['extra_context'],
+            prompt_data['overrides']
+        )
 
     def handle_token_limit_error(self, error_msg):
         self.bottom_stack.send_button.setEnabled(True)
@@ -653,20 +654,7 @@ class ProjectWindow(QMainWindow):
         }
         action_beats = self.bottom_stack.prompt_input.toPlainText().strip()
         prose_config = self.bottom_stack.prose_prompt_panel.get_prompt()
-        final_prompt = prompt_handler.assemble_final_prompt(
-            prose_config.get("text"),
-            action_beats, additional_vars,
-            summary,
-            None
-        )
-        self.bottom_stack.preview_text.clear()
-        self.bottom_stack.preview_text.setReadOnly(True)
-        self.worker = LLMWorker(final_prompt, prose_config)
-        self.worker.data_received.connect(self.update_text)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.finished.connect(self.cleanup_worker)
-        self.worker.token_limit_exceeded.connect(self.show_token_limit_dialog)
-        self.worker.start()
+        retry_llm_with_content(self, prose_config, action_beats, additional_vars, summary)
 
     def retry_with_auto_summary(self):
         summary = self.scene_editor.editor.toPlainText().strip()
@@ -683,72 +671,20 @@ class ProjectWindow(QMainWindow):
 
     def retry_with_truncated_story(self):
         full_text = self.scene_editor.editor.toPlainText()
-        prose_config = self.bottom_stack.prose_prompt_panel.get_prompt()
-        encoding = tiktoken.get_encoding("cl100k_base")
-        tokens = encoding.encode(full_text)
-        max_tokens = prose_config.get("max_tokens", 2000) * 0.5
-        truncated = encoding.decode(tokens[-int(max_tokens):])
+        truncated = get_truncated_text(full_text)
         self.retry_with_summary(truncated)
 
     def update_text(self, text):
-        cursor = self.bottom_stack.preview_text.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.bottom_stack.preview_text.setTextCursor(cursor)
-        self.bottom_stack.preview_text.insertPlainText(text)
+        update_llm_text(text, self.bottom_stack.preview_text)
 
     def cleanup_worker(self):
-        logging.debug(f"Starting cleanup_worker, worker: {id(self.worker) if self.worker else None}")
-        try:
-            if self.worker:
-                worker_id = id(self.worker)
-                if self.worker.isRunning():
-                    logging.debug(f"Stopping worker {worker_id}")
-                    self.worker.stop()
-                    self.worker.wait(5000)
-                    if self.worker.isRunning():
-                        logging.warning(f"Worker {worker_id} did not stop in time; skipping termination")
-                try:
-                    logging.debug(f"Disconnecting signals for worker {worker_id}")
-                    self.worker.data_received.disconnect()
-                    self.worker.finished.disconnect()
-                    self.worker.token_limit_exceeded.disconnect()
-                except TypeError as e:
-                    logging.debug(f"Signal disconnection error for worker {worker_id}: {e}")
-                logging.debug(f"Scheduling worker {worker_id} for deletion")
-                self.worker.deleteLater()
-                self.worker = None
-        except Exception as e:
-            logging.error(f"Error cleaning up LLMWorker: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Thread Error"), _("An error occurred while stopping the LLM thread: {}").format(str(e)))
+        cleanup_llm_worker(self)
 
     def on_finished(self):
-        self.bottom_stack.send_button.setEnabled(True)
-        self.bottom_stack.preview_text.setReadOnly(False)
-        raw_text = self.bottom_stack.preview_text.toPlainText()
-        if not raw_text.strip():
-            QMessageBox.warning(self, _("LLM Response"), _("The LLM did not return any text. Possible token limit reached or an error occurred."))
-            return
-        formatted_text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", raw_text)
-        formatted_text = re.sub(r"\*(.*?)\*", r"<i>\1</i>", formatted_text)
-        formatted_text = formatted_text.replace("\n", "<br>")
-        self.bottom_stack.preview_text.setHtml(formatted_text)
-        logging.debug(f"Active threads: {threading.enumerate()}")
+        handle_llm_completion(self, self.bottom_stack.preview_text)
 
     def stop_llm(self):
-        logging.debug(f"Starting stop_llm, worker: {id(self.worker) if self.worker else None}")
-        try:
-            if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
-                logging.debug("Calling worker.stop()")
-                self.worker.stop()
-                logging.debug("Calling WWApiAggregator.interrupt()")
-                WWApiAggregator.interrupt()
-            self.bottom_stack.send_button.setEnabled(True)
-            self.bottom_stack.preview_text.setReadOnly(False)
-            logging.debug("Calling cleanup_worker")
-            self.cleanup_worker()
-        except Exception as e:
-            logging.error(f"Error in stop_llm: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Error"), _("An error occurred while stopping the LLM: {}").format(str(e)))
+        stop_llm_worker(self)
 
     def apply_preview(self):
         try:
