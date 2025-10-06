@@ -88,7 +88,7 @@ class RewriteDialog(QDialog):
             return
         index = self.prompt_combo.currentIndex()
         prompt_data = self.prompts[index]
-        prompt_text = prompt_data.get("text", "")
+        prompt_text = prompt_data.get("messages", [])
         if not prompt_text:
             QMessageBox.warning(self, _("Rewrite"), _("Selected prompt has no text."))
             return
