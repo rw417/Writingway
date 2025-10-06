@@ -287,7 +287,7 @@ class PromptsWindow(QDialog):
                     f"Model: {prompt.get('model', 'Default Model')}\n"
                     f"Max Tokens: {prompt.get('max_tokens', 2000)}\n"
                     f"Temperature: {prompt.get('temperature', 0.7)}\n"
-                    f"Text: {prompt.get('text', '')}"
+                    f"Messages: {prompt.get('messages', [])}"
                 )
                 if prompt.get("default", False):
                     # Set the warning icon on the left of the prompt name
@@ -298,7 +298,7 @@ class PromptsWindow(QDialog):
                 child.setData(0, Qt.UserRole, {
                     "type": "prompt",
                     "name": prompt.get("name", "Unnamed"),
-                    "text": prompt.get("text", ""),
+                    "messages": prompt.get("messages", []),
                     "default": prompt.get("default", False),
                     "provider": prompt.get("provider", "Default"),
                     "model": prompt.get("model", "Default Model"),

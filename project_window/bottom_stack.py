@@ -11,6 +11,13 @@ from .summary_controller import SummaryController, SummaryMode
 from .summary_model import SummaryModel
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
+from muse.prompt_variables import get_prompt_variables
+
+# gettext '_' fallback for static analysis / standalone edits
+try:
+    _
+except NameError:
+    _ = lambda s: s
 
 class BottomStack(QWidget):
     """Stacked widget for summary and LLM panels."""
@@ -231,33 +238,19 @@ class BottomStack(QWidget):
             self.context_toggle_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book-open.svg"))
 
     def get_additional_vars(self):
-        action_beats = self.prompt_input.toPlainText().strip()
-        current_scene_text = self.scene_editor.editor.toPlainText().strip() if self.controller.project_tree.tree.currentItem() and self.controller.project_tree.get_item_level(self.controller.project_tree.tree.currentItem()) >= 2 else None
-        extra_context = self.context_panel.get_selected_context_text()
-
-        return {
-            "pov": self.pov_combo.currentText(),
-            "pov_character": self.pov_character_combo.currentText(),
-            "tense": self.tense_combo.currentText(),
-            "story_so_far": current_scene_text,
-            "instructions": action_beats,   
-            "context": extra_context,
-        }
+        """Get additional variables using the centralized variable system."""
+        # The centralized system now handles all these variables automatically
+        return get_prompt_variables()
     
     def preview_prompt(self):
-        additional_vars = self.get_additional_vars()
         prompt_config = self.prose_prompt_panel.get_prompt()
         action_beats = self.prompt_input.toPlainText().strip()
-        current_scene_text = self.scene_editor.editor.toPlainText().strip() if self.controller.project_tree.tree.currentItem() and self.controller.project_tree.get_item_level(self.controller.project_tree.tree.currentItem()) >= 2 else None
-        extra_context = self.context_panel.get_selected_context_text()
         
+        # The dialog will automatically use the centralized variable system
         dialog = PromptPreviewDialog(
             self.controller,
             prompt_config=prompt_config, 
-            user_input=action_beats, 
-            additional_vars=additional_vars, 
-            current_scene_text=current_scene_text, 
-            extra_context=extra_context)
+            user_input=action_beats)
         
         # Connect signal to handle edited prompt config
         dialog.promptConfigReady.connect(self.handle_edited_prompt_config)

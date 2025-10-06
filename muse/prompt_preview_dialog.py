@@ -24,6 +24,7 @@ class PromptPreviewDialog(QDialog):
         self.conversation_payload = conversation_payload
         self.prompt_config = prompt_config
         self.user_input = user_input
+        # Legacy parameters - now handled by centralized variable system
         self.additional_vars = additional_vars
         self.current_scene_text = current_scene_text
         self.extra_context = extra_context

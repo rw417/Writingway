@@ -4,14 +4,22 @@ import os
 
 from langchain.prompts import PromptTemplate
 from settings.llm_api_aggregator import WWApiAggregator
+from .prompt_variables import get_prompt_variables, set_user_input
 
 DEFAULT_PROMPT_FALLBACK = "Write a story chapter based on the following user input"
 
-
+# gettext '_' fallback for static analysis / standalone edits
+try:
+    _
+except NameError:
+    _ = lambda s: s
 
 
 def _format_prompt_messages(messages, variables=None):
-    """Combine the content of all message dicts in order, substituting variables."""
+    """
+    Combine the content of all message dicts in order, substituting variables safely.
+    Uses safe variable formatting that handles missing variables individually.
+    """
     if not isinstance(messages, list):
         return ""
     variables = variables or {}
@@ -22,12 +30,48 @@ def _format_prompt_messages(messages, variables=None):
         content = (entry.get("content", "").strip())
         if not content:
             continue
-        try:
-            content = content.format(**variables)
-        except Exception:
-            pass  # If a variable is missing, leave as-is
+        # Use safe variable formatting
+        content = _safe_format_variables(content, variables)
         evaluated.append(content)
     return "\n\n".join(evaluated).strip()
+
+
+def _safe_format_variables(content, variables):
+    """
+    Safely format variables in content, handling missing variables individually.
+    If a variable is missing, it shows an error message for that variable only,
+    while other variables are still evaluated correctly.
+    """
+    import re
+    
+    # Find all variable references in the content
+    variable_pattern = r'\{([^}]+)\}'
+    
+    def replace_variable(match):
+        var_name = match.group(1).strip()
+        if var_name in variables:
+            value = variables[var_name]
+            # Handle None values gracefully
+            return str(value) if value is not None else ""
+        else:
+            # Return a clear error message for missing variable
+            # Using a format that's easy to spot but doesn't break prompt flow
+            return f"{{ERROR: '{var_name}' not found}}"
+    
+    try:
+        # Replace each variable individually
+        result = re.sub(variable_pattern, replace_variable, content)
+        
+        # Log missing variables for debugging (without breaking the prompt)
+        missing_vars = re.findall(r'\{ERROR: \'([^\']+)\' not found\}', result)
+        if missing_vars:
+            print(f"Warning: Missing prompt variables: {', '.join(missing_vars)}")
+        
+        return result
+    except Exception as e:
+        # If anything else goes wrong, return content with error note
+        print(f"Error formatting variables in content: {e}")
+        return content
 
 
 try:
@@ -39,22 +83,29 @@ except NameError:
 def assemble_final_prompt(prompt_config, user_input, additional_vars=None, current_scene_text=None, extra_context=None):
     """
     Build a chat-style messages list for chat-completion APIs.
-    - prompt_config["messages"] entries are formatted with variables and kept in order.
-    - extra_context, current_scene_text, user_input and additional_vars are appended as user messages.
+    Uses the centralized variable system to collect all available variables.
     Returns: List[Dict[str, str]] where each dict has "role" and "content".
     """
+    # Set user input in variable manager
+    set_user_input(user_input)
+    
+    # Get all variables from the centralized system
+    variables = get_prompt_variables()
+    
+    # Legacy compatibility - merge any additional_vars, current_scene_text, extra_context
+    if additional_vars:
+        variables.update(additional_vars)
+    if current_scene_text:
+        variables['story_so_far'] = current_scene_text
+    if extra_context:
+        variables['context'] = extra_context
+    if user_input:
+        variables['user_input'] = user_input
+
     # Base messages from the prompt config, with variable substitution
     prompt_messages = prompt_config.get("messages") or []
-
-    # Prepare variables for substitution
-    variables = dict(additional_vars or {})
-    variables.update({
-        "user_input": user_input or "",
-        "context": extra_context or "",
-        "story_so_far": current_scene_text or ""
-    })
-
     evaluated_messages = []
+    
     for entry in prompt_messages:
         if not isinstance(entry, dict):
             continue
@@ -62,62 +113,47 @@ def assemble_final_prompt(prompt_config, user_input, additional_vars=None, curre
         content = (entry.get("content", "") or "").strip()
         if not content:
             continue
-        try:
-            content = content.format(**variables)
-        except Exception:
-            # If formatting fails, keep raw content
-            pass
-        evaluated_messages.append({"role": role, "content": content})
-
-    # # Append extra pieces as user messages (if present)
-    # if extra_context:
-    #     evaluated_messages.append({"role": "user", "content": extra_context})
-    # if current_scene_text:
-    #     evaluated_messages.append({"role": "user", "content": current_scene_text})
-    # if additional_vars:
-    #     # Represent additional_vars as a compact user message
-    #     kv_lines = "\n".join(f"{k}: {v}" for k, v in (additional_vars.items()))
-    #     if kv_lines:
-    #         evaluated_messages.append({"role": "user", "content": kv_lines})
-    # if user_input:
-    #     evaluated_messages.append({"role": "user", "content": user_input})
+        
+        # Handle variable substitution with individual error handling
+        formatted_content = _safe_format_variables(content, variables)
+        evaluated_messages.append({"role": role, "content": formatted_content})
 
     return evaluated_messages
 
-def preview_final_prompt(prompt_config, user_input, additional_vars=None, current_scene_text=None, extra_context=None):
-    """Generate a plain-text preview by concatenating the built messages' contents."""
-    messages = assemble_final_prompt(prompt_config, user_input, additional_vars, current_scene_text, extra_context)
-    # Preview shows combined content only (no role headings)
-    return "\n\n".join(m.get("content", "") for m in messages).strip()
+# def preview_final_prompt(prompt_config, user_input, additional_vars=None, current_scene_text=None, extra_context=None):
+#     """Generate a plain-text preview by concatenating the built messages' contents."""
+#     messages = assemble_final_prompt(prompt_config, user_input, additional_vars, current_scene_text, extra_context)
+#     # Preview shows combined content only (no role headings)
+#     return "\n\n".join(m.get("content", "") for m in messages).strip()
 
-def send_final_prompt(final_prompt, prompt_config=None, overrides=None):
-    """
-    Sends the final prompt to the LLM using settings from the prompt's configuration.
-    The configuration should include keys such as "provider", "model", "timeout", and "api_key".
+# def send_final_prompt(final_prompt, prompt_config=None, overrides=None):
+#     """
+#     Sends the final prompt to the LLM using settings from the prompt's configuration.
+#     The configuration should include keys such as "provider", "model", "timeout", and "api_key".
 
-    If no prompt_config is provided, then any overrides passed will be used as the configuration.
-    If the resulting configuration is missing an API key (and the provider isn't "Local"), 
-    the function will attempt to load the API key from settings.json based on the provider.
+#     If no prompt_config is provided, then any overrides passed will be used as the configuration.
+#     If the resulting configuration is missing an API key (and the provider isn't "Local"), 
+#     the function will attempt to load the API key from settings.json based on the provider.
 
-    Additional overrides (if provided) are merged afterward.
-    Returns the generated text.
-    """
-    # If prompt_config is not provided, treat 'overrides' as the prompt configuration.
-    if prompt_config is None:
-        prompt_config = overrides.copy() if overrides else {}
-        overrides = {}
+#     Additional overrides (if provided) are merged afterward.
+#     Returns the generated text.
+#     """
+#     # If prompt_config is not provided, treat 'overrides' as the prompt configuration.
+#     if prompt_config is None:
+#         prompt_config = overrides.copy() if overrides else {}
+#         overrides = {}
 
-    # Build the dictionary of overrides from the prompt configuration.
-    prompt_overrides = {
-        "provider": prompt_config.get("provider", "Local"),
-        "model": prompt_config.get("model", "Local Model"),
-    }
-    # Merge any additional overrides if provided.
-    if overrides:
-        prompt_overrides.update(overrides)
+#     # Build the dictionary of overrides from the prompt configuration.
+#     prompt_overrides = {
+#         "provider": prompt_config.get("provider", "Local"),
+#         "model": prompt_config.get("model", "Local Model"),
+#     }
+#     # Merge any additional overrides if provided.
+#     if overrides:
+#         prompt_overrides.update(overrides)
 
-    try:
-        # Send the prompt to the LLM API aggregator.
-        return WWApiAggregator.send_prompt_to_llm(final_prompt, overrides=prompt_overrides)
-    except Exception as e:
-        return(f"Error sending prompt to LLM: {e}")
+#     try:
+#         # Send the prompt to the LLM API aggregator.
+#         return WWApiAggregator.send_prompt_to_llm(final_prompt, overrides=prompt_overrides)
+#     except Exception as e:
+#         return(f"Error sending prompt to LLM: {e}")

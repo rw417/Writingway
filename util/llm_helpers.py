@@ -90,6 +90,7 @@ def send_prompt_with_ui_integration(controller, prompt_config, user_input, addit
 def gather_prompt_data_from_ui(bottom_stack, scene_editor, project_tree):
     """
     Gather all prompt-related data from UI components.
+    Now uses the centralized variable system for cleaner variable management.
     
     Args:
         bottom_stack: BottomStack instance with prompt UI
@@ -102,23 +103,17 @@ def gather_prompt_data_from_ui(bottom_stack, scene_editor, project_tree):
     action_beats = bottom_stack.prompt_input.toPlainText().strip()
     prose_config = bottom_stack.prose_prompt_panel.get_prompt()
     overrides = bottom_stack.prose_prompt_panel.get_overrides()
-    additional_vars = bottom_stack.get_additional_vars()
     
-    # Get current scene text if we're at scene level
-    current_scene_text = None
-    if (project_tree.tree.currentItem() and 
-        project_tree.get_item_level(project_tree.tree.currentItem()) >= 2):
-        current_scene_text = scene_editor.editor.toPlainText().strip()
-    
-    extra_context = bottom_stack.context_panel.get_selected_context_text()
+    # The centralized system now handles all variables automatically
+    # No need to manually collect additional_vars, current_scene_text, extra_context
     
     return {
         'user_input': action_beats,
         'prompt_config': prose_config,
         'overrides': overrides,
-        'additional_vars': additional_vars,
-        'current_scene_text': current_scene_text,
-        'extra_context': extra_context
+        'additional_vars': None,  # Legacy - now handled by centralized system
+        'current_scene_text': None,  # Legacy - now handled by centralized system  
+        'extra_context': None  # Legacy - now handled by centralized system
     }
 
 

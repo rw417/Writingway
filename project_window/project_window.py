@@ -39,6 +39,7 @@ from .token_limit_dialog import TokenLimitDialog
 from util.llm_helpers import (send_prompt_with_ui_integration, gather_prompt_data_from_ui, 
                               cleanup_llm_worker, stop_llm_worker, handle_llm_completion, 
                               update_llm_text, retry_llm_with_content, get_truncated_text)
+from muse.prompt_variables import initialize_variable_manager
 from gettext import pgettext
 import muse.prompt_handler as prompt_handler
 
@@ -119,7 +120,60 @@ class ProjectWindow(QMainWindow):
         self.load_initial_state()
         self.enhanced_window.compendium_updated.connect(self.on_compendium_updated)
 
+        # Initialize the centralized variable manager
+        self.variable_manager = initialize_variable_manager(self)
+        
+        # Add custom variables as examples
+        self.setup_custom_variables()
+
         self.global_toolbar.toolbar.show()
+
+    def setup_custom_variables(self):
+        """Setup custom variables for prompt assembly."""
+        if not self.variable_manager:
+            return
+            
+        # Example: Add current project name as a variable
+        self.variable_manager.add_static_variable('projectName', self.model.project_name)
+        
+        # Example: Add current date as a variable  
+        import datetime
+        self.variable_manager.add_custom_variable('currentDate', 
+            lambda: datetime.datetime.now().strftime("%Y-%m-%d"))
+        
+        # Example: Add word count of current scene
+        def get_word_count():
+            current_item = self.project_tree.tree.currentItem()
+            if current_item and self.project_tree.get_item_level(current_item) >= 2:
+                text = self.scene_editor.editor.toPlainText()
+                return str(len(text.split()))
+            return "0"
+        self.variable_manager.add_custom_variable('wordCount', get_word_count)
+
+    def add_prompt_variable(self, name: str, value_func):
+        """
+        Add a custom variable that can be used in prompts.
+        
+        Args:
+            name: Variable name (used as {name} in prompts)
+            value_func: Function that returns the current value as a string,
+                       or a static string value
+        
+        Example:
+            # Add a static variable
+            window.add_prompt_variable('author', 'John Doe')
+            
+            # Add a dynamic variable
+            window.add_prompt_variable('sceneCount', 
+                lambda: str(len(self.get_all_scenes())))
+        """
+        if not self.variable_manager:
+            return
+            
+        if callable(value_func):
+            self.variable_manager.add_custom_variable(name, value_func)
+        else:
+            self.variable_manager.add_static_variable(name, str(value_func))
 
     def init_ui(self):
         self.setWindowTitle(_("Project: {}").format(self.model.project_name))
