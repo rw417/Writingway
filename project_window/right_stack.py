@@ -262,6 +262,8 @@ class RightStack(QWidget):
         layout.addWidget(self.preview_stack)  # Changed from self.preview_text
         layout.addLayout(preview_buttons)
         layout.addLayout(action_layout)
+
+        self._apply_toggle_highlight_style()
         return panel
 
     def add_combo(self, layout, label_text, items, callback):
@@ -290,6 +292,21 @@ class RightStack(QWidget):
             if combo:
                 combo.setEnabled(True)
     
+    def _apply_toggle_highlight_style(self):
+        """Apply a consistent theme-derived highlight color to toggle buttons."""
+        highlight_color = ThemeManager.get_toggle_highlight_color()
+        if not highlight_color:
+            return
+
+        rgba = f"rgba({highlight_color.red()}, {highlight_color.green()}, {highlight_color.blue()}, {highlight_color.alpha()})"
+        highlight_style = f"QPushButton:checked {{ background-color: {rgba}; }}"
+
+        for button in (getattr(self, 'tweak_prompt_button', None),
+                       getattr(self, 'preview_button', None),
+                       getattr(self, 'context_toggle_button', None)):
+            if button and button.isCheckable():
+                button.setStyleSheet(highlight_style)
+
     def update_tint(self, tint_color):
         self.tint_color = tint_color
         self.apply_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/save.svg", tint_color))
@@ -309,6 +326,8 @@ class RightStack(QWidget):
             self.pov_character_combo.setToolTip(_("POV Character: {}").format(self.model.settings.get('global_pov_character', 'Character')))
         if self.tense_combo:
             self.tense_combo.setToolTip(_("Tense: {}").format(self.model.settings.get('global_tense', 'Present Tense')))
+
+        self._apply_toggle_highlight_style()
 
     def _update_progress(self, message):
         self.controller.statusBar().showMessage(message, 5000)

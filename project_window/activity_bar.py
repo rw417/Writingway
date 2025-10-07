@@ -26,19 +26,18 @@ class ActivityBar(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.toolbar)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.toolbar.setStyleSheet("QToolBar#ActivityBar { border: 0px; }")
         self.toolbar.setOrientation(Qt.Vertical)
         self.toolbar.setFixedWidth(50)  # Fixed width for icons
 
         # Actions - only 3 main views
         self.outline_editor_action = self.add_action(
-            "assets/icons/pen-tool.svg", 
-            _("Outline & Scene Editor"), 
+            "assets/icons/pen-tool.svg",
+            _("Outline & Scene Editor"),
             self.controller.switch_to_outline_editor
         )
         self.compendium_action = self.add_action(
-            "assets/icons/book-open.svg", 
-            _("Compendium"), 
+            "assets/icons/book-open.svg",
+            _("Compendium"),
             self.controller.switch_to_compendium
         )
         self.prompts_action = self.add_action(
@@ -50,6 +49,8 @@ class ActivityBar(QWidget):
         # Set initial state
         self.outline_editor_action.setChecked(True)
         self.current_view = "outline_editor"
+
+        self._apply_highlight_style()
 
     def add_action(self, icon_path, tooltip, callback):
         action = QAction(ThemeManager.get_tinted_icon(icon_path, self.tint_color), "", self)
@@ -88,3 +89,16 @@ class ActivityBar(QWidget):
         self.outline_editor_action.setIcon(ThemeManager.get_tinted_icon("assets/icons/pen-tool.svg", tint_color))
         self.compendium_action.setIcon(ThemeManager.get_tinted_icon("assets/icons/book-open.svg", tint_color))
         self.prompts_action.setIcon(ThemeManager.get_tinted_icon("assets/icons/ai-script-icon.svg", tint_color))
+        self._apply_highlight_style()
+
+    def _apply_highlight_style(self):
+        highlight_color = ThemeManager.get_toggle_highlight_color()
+        base_style = "QToolBar#ActivityBar { border: 0px; }"
+
+        if not highlight_color:
+            self.toolbar.setStyleSheet(base_style)
+            return
+
+        rgba = f"rgba({highlight_color.red()}, {highlight_color.green()}, {highlight_color.blue()}, {highlight_color.alpha()})"
+        checked_style = f"QToolBar#ActivityBar QToolButton:checked {{ background-color: {rgba}; border-radius: 6px; }}"
+        self.toolbar.setStyleSheet("\n".join([base_style, checked_style]))

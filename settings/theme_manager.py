@@ -978,7 +978,33 @@ class ThemeManager(QObject):
                 "hover": "#f5e8d6"
             },
         }
-        return palettes.get(theme_name, palettes["default"])
+        palette = palettes.get(theme_name)
+        if palette:
+            return palette
+        return palettes.get("Standard", {
+            "background": "#f9f9f9",
+            "text": "#333333",
+            "accent": "#0078d4",
+            "border": "#cccccc",
+            "hover": "#d0d0d0"
+        })
+
+    @classmethod
+    def get_toggle_highlight_color(cls, theme_name=None, alpha=90):
+        """Return a semi-transparent color for toggle highlights based on the theme."""
+        theme = theme_name or cls._current_theme
+        palette = cls.get_theme_palette(theme)
+        base_color = None
+
+        if palette:
+            base_color = palette.get("accent") or palette.get("hover")
+
+        if not base_color:
+            base_color = cls.ICON_TINTS.get(theme, "#0078d4")
+
+        color = QColor(base_color)
+        color.setAlpha(max(0, min(alpha, 255)))
+        return color
 
     @classmethod
     def clear_icon_cache(cls):
