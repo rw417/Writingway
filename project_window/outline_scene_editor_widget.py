@@ -4,6 +4,8 @@ Outline & Scene Editor Widget - Combined view for project navigation, search, ed
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget)
 from PyQt5.QtCore import Qt
+
+from settings.theme_manager import ThemeManager
 from .project_tree_widget import ProjectTreeWidget
 from .search_replace_panel import SearchReplacePanel
 from .scene_editor import SceneEditor
@@ -61,19 +63,21 @@ class OutlineSceneEditorWidget(QWidget):
         
         # Now create search panel
         self.search_panel = SearchReplacePanel(self.project_window, self.model, self.icon_tint)
-        self.left_tabs.addTab(self.search_panel, _("Search & Replace"))
+        self.left_tabs.addTab(self.search_panel, _("")) # Empty label, icon will show instead
+        self.left_tabs.setTabIcon(self.left_tabs.indexOf(self.search_panel), ThemeManager.get_tinted_icon("assets/icons/search.svg", self.icon_tint))
+        self.left_tabs.setTabToolTip(self.left_tabs.indexOf(self.search_panel), _("Search & Replace"))  # Add a tooltip for the search tab
         
         self.main_splitter.addWidget(self.left_tabs)
         
-        # Right side: Scene editor and bottom stack
-        right_splitter = QSplitter(Qt.Vertical)
+        # Right side: Scene editor and bottom stack (horizontal layout)
+        right_splitter = QSplitter(Qt.Horizontal)
         right_splitter.addWidget(self.scene_editor)
         
-        # Bottom stack (LLM controls)
+        # Bottom stack (LLM controls) - now on the right side
         self.bottom_stack = BottomStack(self.project_window, self.model, self.icon_tint)
         right_splitter.addWidget(self.bottom_stack)
         
-        # Set stretch factors
+        # Set stretch factors - editor takes more space than bottom stack
         right_splitter.setStretchFactor(0, 3)
         right_splitter.setStretchFactor(1, 1)
         

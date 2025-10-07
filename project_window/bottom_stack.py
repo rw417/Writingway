@@ -180,16 +180,14 @@ class BottomStack(QWidget):
         buttons_layout.addWidget(pulldown_widget)
 
         left_layout.addLayout(buttons_layout)
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_container)
-
+        
+        # Context panel below the buttons and dropdowns
         self.context_panel = ContextPanel(self.model.structure, self.model.project_name, self.controller, enhanced_window=self.controller.enhanced_window)
         self.context_panel.setVisible(False)
-        splitter.addWidget(self.context_panel)
-        splitter.setSizes([500, 300])
+        left_layout.addWidget(self.context_panel)
 
         left_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        action_layout.addWidget(splitter)
+        action_layout.addWidget(left_container)
 
         layout.addWidget(self.preview_text)
         layout.addLayout(preview_buttons)

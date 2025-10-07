@@ -586,34 +586,52 @@ class EnhancedCompendiumWindow(QMainWindow):
             return
         
         analysis_template = PromptTemplate(
-            input_variables=["scene_content", "existing_compendium"],
-            template="""Analyze the following scene content and existing compendium data. 
-Generate or update compendium entries in JSON format for:
-1. Major and minor characters (name, personality, description, relationships)
-2. Locations (name, description)
-3. Key objects (name, description)
-4. Significant plot items (name, description)
-Compendium entries apply to the entire story, so do not update existing entries for current status.
-Scene Content:
+            input_variables=["scene_content", "existing_compendium", "context"],
+            template="""You are a creative writing assistant analyzing a scene to extract worldbuilding information.
+
+TASK: Extract entities from the scene and format them as JSON compendium entries.
+
+CONTEXT:
+- Story Genre: {context.get("genre", "General Fiction")}
+- Current Chapter/Scene: {context.get("scene_name", "Unknown")}
+- POV Character: {context.get("pov", "Unknown")}
+
+RULES:
+1. Extract only FACTUAL information (no speculation)
+2. Focus on timeless traits, not temporary states
+3. For existing entries, only add NEW information
+4. Keep descriptions concise (2-3 sentences max)
+5. Use consistent naming (check existing entries first)
+
+CATEGORIES TO EXTRACT:
+- Characters: Name, age, appearance, personality, role, key traits
+- Locations: Name, type (city/room/etc), atmosphere, significance
+- Objects: Name, description, importance to plot
+- Factions/Groups: Name, purpose, members, relationships
+- Events: Name, summary, participants, consequences
+
+SCENE CONTENT:
 {scene_content}
-Existing Compendium:
+
+EXISTING COMPENDIUM (check for duplicates):
 {existing_compendium}
-Return only the JSON result without additional commentary. The JSON should maintain the structure:
-{{
+
+OUTPUT FORMAT (JSON only, no commentary):
+{
   "categories": [
-    {{
-      "name": "category_name",
+    {
+      "name": "Characters|Locations|Objects|Factions|Events",
       "entries": [
-        {{
-          "name": "entry_name",
-          "content": "description and details",
-          "relationships": [{{"name": "related_entry", "type": "relationship_type"}}] (optional)
-        }}
+        {
+          "name": "EntityName",
+          "content": "Concise description focusing on permanent traits",
+          "relationships": [{"name": "related_entry", "type": "relationship_type"}], (optional)
+          "metadata": {"introduced_in": "scene_name", "last_seen": "scene_name"}
+        }
       ]
-    }}
+    }
   ]
-}}
-"""
+}"""
         )
         prompt = analysis_template.format(
             scene_content=scene_content,
