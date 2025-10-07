@@ -22,7 +22,8 @@ from .rewrite_feature import RewriteDialog
 from .activity_bar import ActivityBar
 from .search_replace_panel import SearchReplacePanel
 from .embedded_prompts_panel import EmbeddedPromptsPanel
-from compendium.compendium_panel import CompendiumPanel
+from .outline_scene_editor_widget import OutlineSceneEditorWidget
+from compendium.enhanced_compendium import EnhancedCompendiumWindow
 from util.tts_manager import WW_TTSManager
 from settings.backup_manager import show_backup_dialog
 from settings.llm_api_aggregator import WWApiAggregator
@@ -114,7 +115,6 @@ class ProjectWindow(QMainWindow):
         self.unsaved_preview = False
         self.enhanced_window = compendium_window
         self.worker = None
-        self.last_sidebar_width = 250
         self.init_ui()
         self.setup_connections()
         self.read_settings()
@@ -189,134 +189,55 @@ class ProjectWindow(QMainWindow):
         main_layout = QHBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(self.main_splitter)
-
-        self.left_widget = QWidget()
-        left_layout = QHBoxLayout(self.left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
-
+        # Activity bar on the left
         self.activity_bar = ActivityBar(self, self.icon_tint, position="left")
-        left_layout.addWidget(self.activity_bar)
-        self.scene_editor = SceneEditor(self, self.icon_tint)
+        main_layout.addWidget(self.activity_bar)
 
-        self.side_bar = QStackedWidget()
-        self.side_bar.setMinimumWidth(200)
-        self.project_tree = ProjectTreeWidget(self, self.model)
-        self.search_panel = SearchReplacePanel(self, self.model, self.icon_tint)
-        self.compendium_panel = CompendiumPanel(self, enhanced_window=self.enhanced_window)
-        self.prompts_panel = EmbeddedPromptsPanel(self.model.project_name, self)
-        self.side_bar.addWidget(self.project_tree)
-        self.side_bar.addWidget(self.search_panel)
-        self.side_bar.addWidget(self.compendium_panel)
-        self.side_bar.addWidget(self.prompts_panel)
-        left_layout.addWidget(self.side_bar)
-
-        self.main_splitter.addWidget(self.left_widget)
-
-        right_vertical_splitter = QSplitter(Qt.Vertical)
-        self.compendium_editor = QTextEdit()
-        self.compendium_editor.setReadOnly(True)
-        self.compendium_editor.setPlaceholderText(_("Select a compendium entry to view..."))
-        self.prompts_editor = self.prompts_panel.editor_widget
-        self.editor_stack = QStackedWidget()
-        self.editor_stack.addWidget(self.scene_editor)
-        self.editor_stack.addWidget(self.compendium_editor)
-        self.editor_stack.addWidget(self.prompts_editor)
-        self.bottom_stack = BottomStack(self, self.model, self.icon_tint)
+        # Main stacked widget with 3 views
+        self.main_stack = QStackedWidget()
+        main_layout.addWidget(self.main_stack)
+        
+        # 1. Outline & Scene Editor Widget (includes project tree, search, editor, bottom stack)
+        self.outline_editor_widget = OutlineSceneEditorWidget(self, self.model, self.icon_tint)
+        self.main_stack.addWidget(self.outline_editor_widget)
+        
+        # Set up references to child components for easier access
+        self.project_tree = self.outline_editor_widget.project_tree
+        self.search_panel = self.outline_editor_widget.search_panel
+        self.scene_editor = self.outline_editor_widget.scene_editor
+        self.bottom_stack = self.outline_editor_widget.bottom_stack
+        
+        # Connect signals
         self.bottom_stack.preview_text.textChanged.connect(self.on_preview_text_changed)
         self.scene_editor.editor.textChanged.connect(self.on_editor_text_changed)
-
-        right_vertical_splitter.addWidget(self.editor_stack)
-        right_vertical_splitter.addWidget(self.bottom_stack)
-        right_vertical_splitter.setStretchFactor(0, 3)
-        right_vertical_splitter.setStretchFactor(1, 1)
-
-        self.main_splitter.addWidget(right_vertical_splitter)
-        self.main_splitter.setStretchFactor(0, 1)
-        self.main_splitter.setStretchFactor(1, 3)
-        self.main_splitter.setHandleWidth(10)
-        self.main_splitter.splitterMoved.connect(self.update_sidebar_width)
+        
+        # 2. Compendium Widget
+        self.compendium_panel = EnhancedCompendiumWindow(self.model.project_name, self)
+        self.main_stack.addWidget(self.compendium_panel)
+        
+        # 3. Prompts Panel Widget
+        self.prompts_panel = EmbeddedPromptsPanel(self.model.project_name, self)
+        self.main_stack.addWidget(self.prompts_panel)
+        
+        # Set initial view to outline editor
+        self.main_stack.setCurrentWidget(self.outline_editor_widget)
+        
         self.setCentralWidget(main_widget)
 
-    def update_sidebar_width(self, pos, index):
-        if self.side_bar.isVisible():
-            self.last_sidebar_width = self.main_splitter.sizes()[0]
-
-    def toggle_outline_view(self, show):
-        self.side_bar.setVisible(show)
-        if show:
-            self.side_bar.setCurrentWidget(self.project_tree)
-            self.editor_stack.setCurrentWidget(self.scene_editor)
-            self.bottom_stack.setVisible(True)
-            self.main_splitter.setSizes([self.last_sidebar_width, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, False)
-            self.left_widget.setMinimumWidth(250)
-            self.left_widget.setMaximumWidth(16777215)
-        else:
-            self.last_sidebar_width = self.main_splitter.sizes()[0]
-            self.main_splitter.setSizes([50, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, True)
-            self.left_widget.setMinimumWidth(50)
-            self.left_widget.setMaximumWidth(50)
-        self.activity_bar.outline_action.setChecked(show)
-        self.bottom_stack.setVisible(True)
-
-    def toggle_search_view(self, show):
-        self.side_bar.setVisible(show)
-        if show:
-            self.side_bar.setCurrentWidget(self.search_panel)
-            self.editor_stack.setCurrentWidget(self.scene_editor)
-            self.main_splitter.setSizes([self.last_sidebar_width, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, False)
-            self.left_widget.setMinimumWidth(250)
-            self.left_widget.setMaximumWidth(16777215)
-        else:
-            self.last_sidebar_width = self.main_splitter.sizes()[0]
-            self.main_splitter.setSizes([50, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, True)
-            self.left_widget.setMinimumWidth(50)
-            self.left_widget.setMaximumWidth(50)
-        self.activity_bar.search_action.setChecked(show)
-        self.bottom_stack.setVisible(True)
-
-    def toggle_compendium_view(self, show):
-        self.side_bar.setVisible(show)
-        if show:
-            self.side_bar.setCurrentWidget(self.compendium_panel)
-            self.editor_stack.setCurrentWidget(self.compendium_editor)
-            self.main_splitter.setSizes([self.last_sidebar_width, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, False)
-            self.left_widget.setMinimumWidth(250)
-            self.left_widget.setMaximumWidth(16777215)
-        else:
-            self.last_sidebar_width = self.main_splitter.sizes()[0]
-            self.main_splitter.setSizes([50, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, True)
-            self.left_widget.setMinimumWidth(50)
-            self.left_widget.setMaximumWidth(50)
-        self.activity_bar.compendium_action.setChecked(show)
-        self.bottom_stack.setVisible(True)
-
-    def toggle_prompts_view(self, show):
-        self.side_bar.setVisible(show)
-        if show:
-            self.side_bar.setCurrentWidget(self.prompts_panel)
-            self.editor_stack.setCurrentWidget(self.prompts_editor)
-            self.main_splitter.setSizes([self.last_sidebar_width, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, False)
-            self.left_widget.setMinimumWidth(250)
-            self.left_widget.setMaximumWidth(16777215)
-            self.bottom_stack.setVisible(False)
-        else:
-            self.last_sidebar_width = self.main_splitter.sizes()[0]
-            self.main_splitter.setSizes([50, self.main_splitter.sizes()[1]])
-            self.main_splitter.setCollapsible(0, True)
-            self.left_widget.setMinimumWidth(50)
-            self.left_widget.setMaximumWidth(50)
-            self.bottom_stack.setVisible(True)
-        self.activity_bar.prompts_action.setChecked(show)
+    def switch_to_outline_editor(self):
+        """Switch to the Outline & Scene Editor view."""
+        self.main_stack.setCurrentWidget(self.outline_editor_widget)
+        self.activity_bar.outline_editor_action.setChecked(True)
+    
+    def switch_to_compendium(self):
+        """Switch to the Compendium view."""
+        self.main_stack.setCurrentWidget(self.compendium_panel)
+        self.activity_bar.compendium_action.setChecked(True)
+    
+    def switch_to_prompts(self):
+        """Switch to the Prompts Panel view."""
+        self.main_stack.setCurrentWidget(self.prompts_panel)
+        self.activity_bar.prompts_action.setChecked(True)
 
     def setup_status_bar(self):
         self.setStatusBar(self.statusBar())
@@ -457,16 +378,18 @@ class ProjectWindow(QMainWindow):
         windowState = settings.value(f"{self.model.project_name}/windowState")
         if windowState:
             self.restoreState(windowState)
+        # Restore splitter state for outline editor widget
         splitterState = settings.value(f"{self.model.project_name}/mainSplitterState")
-        if splitterState and hasattr(self, "main_splitter"):
-            self.main_splitter.restoreState(splitterState)
+        if splitterState and hasattr(self.outline_editor_widget, "main_splitter"):
+            self.outline_editor_widget.main_splitter.restoreState(splitterState)
 
     def write_settings(self):
         settings = QSettings("MyCompany", "WritingwayProject")
         settings.setValue(f"{self.model.project_name}/geometry", self.saveGeometry())
         settings.setValue(f"{self.model.project_name}/windowState", self.saveState())
-        if hasattr(self, "main_splitter"):
-            settings.setValue(f"{self.model.project_name}/mainSplitterState", self.main_splitter.saveState())
+        # Save splitter state for outline editor widget
+        if hasattr(self.outline_editor_widget, "main_splitter"):
+            settings.setValue(f"{self.model.project_name}/mainSplitterState", self.outline_editor_widget.main_splitter.saveState())
 
     def closeEvent(self, a0):
         if not self.check_unsaved_changes():
@@ -953,7 +876,8 @@ class ProjectWindow(QMainWindow):
         self.manual_save_scene()
 
     def open_compendium(self):
-        self.toggle_compendium_view(not self.side_bar.isVisible() or self.side_bar.currentWidget() != self.compendium_panel)
+        """Open the compendium view."""
+        self.switch_to_compendium()
 
     def open_prompts_window(self):
         prompts_window = PromptsWindow(self.model.project_name, self)
@@ -1018,11 +942,8 @@ class ProjectWindow(QMainWindow):
         tint_str = ThemeManager.ICON_TINTS.get(self.current_theme, "black")
         self.icon_tint = QColor(tint_str)
         self.global_toolbar.update_tint(self.icon_tint)
-        self.scene_editor.update_tint(self.icon_tint)
-        self.bottom_stack.update_tint(self.icon_tint)
+        self.outline_editor_widget.update_tint(self.icon_tint)
         self.activity_bar.update_tint(self.icon_tint)
-        self.search_panel.update_tint(self.icon_tint)
-        self.project_tree.assign_all_icons()
 
     def refresh_category_backgrounds(self):
         """Refresh category background colors when the setting changes."""

@@ -23,10 +23,10 @@ from settings.llm_settings_dialog import LLMSettingsDialog
 DEBUG = False
 
 # gettext '_' fallback for static analysis / standalone edits
-def _(s):
-    """Translation function fallback"""
-    import builtins
-    return builtins._(s) if hasattr(builtins, '_') else s
+try:
+    _
+except NameError:
+    _ = lambda s: s
 
 #############################
 # ENHANCED COMPENDIUM CLASS #
@@ -341,33 +341,15 @@ class EnhancedCompendiumWindow(QMainWindow):
             if DEBUG:
                 print("Loaded compendium data")
             
-            # Migrate to add uuid if missing
-            changed = False
-            for cat in self.compendium_data.get("categories", []):
-                for entry in cat.get("entries", []):
-                    if "uuid" not in entry:
-                        entry["uuid"] = str(uuid.uuid4())
-                        changed = True
-            if changed:
-                with open(self.compendium_file, "w", encoding="utf-8") as f:
-                    json.dump(self.compendium_data, f, indent=2)
-                if DEBUG:
-                    print("Added UUIDs to compendium entries and saved.")
-            
             if "extensions" not in self.compendium_data:
                 self.compendium_data["extensions"] = {"entries": {}}
             elif "entries" not in self.compendium_data["extensions"]:
                 self.compendium_data["extensions"]["entries"] = {}
             
             # Populate tree view from categories and set entry colors
-            bold_font = QFont()
-            bold_font.setBold(True)
             for cat in self.compendium_data.get("categories", []):
                 cat_item = QTreeWidgetItem(self.tree, [cat.get("name", "Unnamed Category")])
                 cat_item.setData(0, Qt.UserRole, "category")
-                cat_item.setFont(0, bold_font)
-                # Set background color from ThemeManager
-                cat_item.setBackground(0, QBrush(ThemeManager.get_category_background_color()))
                 for entry in cat.get("entries", []):
                     entry_name = entry.get("name", "Unnamed Entry")
                     entry_item = QTreeWidgetItem(cat_item, [entry_name])
@@ -422,13 +404,9 @@ class EnhancedCompendiumWindow(QMainWindow):
         menu = QMenu(self)
         if item is None:
             action_new_category = menu.addAction(_("New Category"))
-            menu.addSeparator()
-            action_analyze = menu.addAction(_("Analyze Scene with AI"))
             action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
             if action == action_new_category:
                 self.new_category()
-            elif action == action_analyze:
-                self.analyze_scene_with_ai()
             return
         item_type = item.data(0, Qt.UserRole)
         if item_type == "category":
@@ -455,8 +433,6 @@ class EnhancedCompendiumWindow(QMainWindow):
             action_move_to = menu.addAction(_("Move To..."))
             action_move_up = menu.addAction(_("Move Up"))
             action_move_down = menu.addAction(_("Move Down"))
-            menu.addSeparator()
-            action_analyze = menu.addAction(_("Analyze Scene with AI"))
             action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
             if action == action_save:
                 self.save_entry(item)
@@ -470,8 +446,6 @@ class EnhancedCompendiumWindow(QMainWindow):
                 self.move_item(item, "up")
             elif action == action_move_down:
                 self.move_item(item, "down")
-            elif action == action_analyze:
-                self.analyze_scene_with_ai()
     
     def show_tags_context_menu(self, pos):
         """Show context menu for tag actions: remove, move up, move down."""
@@ -553,169 +527,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.find_and_select_entry(entry_name)
 
     def sanitize(self, text):
-        return re.sub(r'\W+', '', text)
-    
-    def analyze_scene_with_ai(self):
-        """Analyze the current scene with AI and update compendium entries."""
-        # Check if project_window is available and has scene content
-        if not hasattr(self, 'project_window') or not self.project_window:
-            QMessageBox.warning(self, _("Warning"), _("No project window available for scene analysis."))
-            return
-            
-        scene_editor = self.project_window.scene_editor.editor
-        if not scene_editor or not scene_editor.toPlainText():
-            QMessageBox.warning(self, _("Warning"), _("No scene content available to analyze."))
-            return
-            
-        scene_content = scene_editor.toPlainText()
-        current_compendium = {}
-        if os.path.exists(self.compendium_file):
-            try:
-                with open(self.compendium_file, "r", encoding="utf-8") as f:
-                    current_compendium = json.load(f)
-            except Exception as e:
-                print(f"Error loading compendium: {e}")
-        
-        overrides = LLMSettingsDialog.show_dialog(
-            self,
-            default_provider=WWSettingsManager.get_active_llm_name(),
-            default_model=WWSettingsManager.get_active_llm_config().get("model", None),
-            default_timeout=60
-        )
-        if not overrides:
-            return
-        
-        analysis_template = PromptTemplate(
-            input_variables=["scene_content", "existing_compendium"],
-            template="""Analyze the following scene content and existing compendium data. 
-Generate or update compendium entries in JSON format for:
-1. Major and minor characters (name, personality, description, relationships)
-2. Locations (name, description)
-3. Key objects (name, description)
-4. Significant plot items (name, description)
-Compendium entries apply to the entire story, so do not update existing entries for current status.
-Scene Content:
-{scene_content}
-Existing Compendium:
-{existing_compendium}
-Return only the JSON result without additional commentary. The JSON should maintain the structure:
-{{
-  "categories": [
-    {{
-      "name": "category_name",
-      "entries": [
-        {{
-          "name": "entry_name",
-          "content": "description and details",
-          "relationships": [{{"name": "related_entry", "type": "relationship_type"}}] (optional)
-        }}
-      ]
-    }}
-  ]
-}}
-"""
-        )
-        prompt = analysis_template.format(
-            scene_content=scene_content,
-            existing_compendium=json.dumps(current_compendium, indent=2)
-        )
-        try:
-            response = WWApiAggregator.send_prompt_to_llm(prompt, overrides=overrides)
-            cleaned_response = self.preprocess_json_string(response)
-            repaired_response = self.repair_incomplete_json(cleaned_response)
-            if repaired_response is None:
-                QMessageBox.warning(self, _("Error"), _("AI returned invalid JSON that could not be repaired."))
-                return
-            try:
-                ai_compendium = json.loads(repaired_response)
-            except json.JSONDecodeError:
-                QMessageBox.warning(self, _("Error"), _("AI returned invalid JSON format."))
-                return
-            dialog = AICompendiumDialog(ai_compendium, self.compendium_file, self)
-            if dialog.exec_() == QDialog.Accepted:
-                self.save_ai_analysis(dialog.get_compendium_data())
-        except Exception as e:
-            QMessageBox.warning(self, _("Error"), _("Failed to analyze scene: {}").format(str(e)))
-    
-    def preprocess_json_string(self, raw_string):
-        """Remove markdown code fences from JSON response."""
-        cleaned = re.sub(r'^```(?:json)?\s*\n', '', raw_string, flags=re.MULTILINE)
-        cleaned = re.sub(r'\n```$', '', cleaned, flags=re.MULTILINE)
-        return cleaned.strip()
-    
-    def repair_incomplete_json(self, json_str):
-        """Attempt to repair incomplete JSON by closing brackets."""
-        try:
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            repaired = json_str.strip()
-            if repaired.endswith('"'):
-                repaired += '"'
-            open_braces = repaired.count('{') - repaired.count('}')
-            open_brackets = repaired.count('[') - repaired.count(']')
-            for _ in range(open_braces):
-                repaired += '}'
-            for _ in range(open_brackets):
-                repaired += ']'
-            try:
-                json.loads(repaired)
-                return repaired
-            except json.JSONDecodeError:
-                return None
-    
-    def save_ai_analysis(self, ai_compendium):
-        """Save AI-generated compendium entries, merging with existing data."""
-        try:
-            if os.path.exists(self.compendium_file):
-                with open(self.compendium_file, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-                if "extensions" not in existing:
-                    existing["extensions"] = {"entries": {}}
-                elif "entries" not in existing["extensions"]:
-                    existing["extensions"]["entries"] = {}
-                existing_categories = {cat["name"]: cat for cat in existing.get("categories", [])}
-                for new_cat in ai_compendium.get("categories", []):
-                    if new_cat["name"] in existing_categories:
-                        existing_entries = {entry["name"]: entry for entry in existing_categories[new_cat["name"]]["entries"]}
-                        for new_entry in new_cat.get("entries", []):
-                            entry_name = new_entry["name"]
-                            existing_entries[entry_name] = {
-                                "name": entry_name,
-                                "content": new_entry.get("content", ""),
-                                "relationships": new_entry.get("relationships", []),
-                                "uuid": new_entry.get("uuid", str(uuid.uuid4()))
-                            }
-                            existing["extensions"]["entries"][entry_name] = {
-                                "relationships": new_entry.get("relationships", []),
-                                **existing["extensions"]["entries"].get(entry_name, {})
-                            }
-                        existing_categories[new_cat["name"]]["entries"] = list(existing_entries.values())
-                    else:
-                        existing["categories"].append(new_cat)
-                        for entry in new_cat.get("entries", []):
-                            entry_name = entry["name"]
-                            existing["extensions"]["entries"][entry_name] = {
-                                "relationships": entry.get("relationships", [])
-                            }
-            else:
-                existing = {
-                    "categories": ai_compendium.get("categories", []),
-                    "extensions": {
-                        "entries": {
-                            entry["name"]: {"relationships": entry.get("relationships", [])}
-                            for cat in ai_compendium.get("categories", [])
-                            for entry in cat.get("entries", [])
-                        }
-                    }
-                }
-            with open(self.compendium_file, "w", encoding="utf-8") as f:
-                json.dump(existing, f, indent=2)
-            self.populate_compendium()
-            self.compendium_updated.emit(self.project_name)
-            QMessageBox.information(self, _("Success"), _("Compendium updated successfully."))
-        except Exception as e:
-            QMessageBox.warning(self, _("Error"), _("Failed to save compendium: {}").format(str(e)))
+        return re.sub(r'\W+', '', text)    
 
     def add_image(self):
         """Add an image to the current entry."""
