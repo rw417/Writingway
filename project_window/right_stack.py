@@ -137,38 +137,47 @@ class RightStack(QWidget):
         self.prompt_input.textChanged.connect(self.controller.on_prompt_input_text_changed)
         left_layout.addWidget(self.prompt_input)
 
-        buttons_layout = QHBoxLayout()
-        self.prose_prompt_panel = PromptPanel("Prose")
-        self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.prose_prompt_panel.setMaximumWidth(300)
-        buttons_layout.addWidget(self.prose_prompt_panel)
-
+        # Top button row (above prompt selector)
+        top_buttons_layout = QHBoxLayout()
+        
         self.preview_button = QPushButton()
         self.preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", self.tint_color))
         self.preview_button.setToolTip(_("Preview the final prompt"))
         self.preview_button.clicked.connect(self.preview_prompt)
-        buttons_layout.addWidget(self.preview_button)
+        top_buttons_layout.addWidget(self.preview_button)
 
         self.send_button = QPushButton()
         self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg", self.tint_color))
         self.send_button.setToolTip(_("Sends the action beats to the LLM"))
         self.send_button.clicked.connect(self.controller.send_prompt)
-        buttons_layout.addWidget(self.send_button)
+        top_buttons_layout.addWidget(self.send_button)
 
         self.stop_button = QPushButton()
         self.stop_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg", self.tint_color))
         self.stop_button.setToolTip(_("Stop the LLM processing"))
         self.stop_button.clicked.connect(self.controller.stop_llm)
-        buttons_layout.addWidget(self.stop_button)
+        top_buttons_layout.addWidget(self.stop_button)
 
         self.context_toggle_button = QPushButton()
         self.context_toggle_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book.svg", self.tint_color))
         self.context_toggle_button.setToolTip(_("Toggle context panel"))
         self.context_toggle_button.setCheckable(True)
         self.context_toggle_button.clicked.connect(self.toggle_context_panel)
-        buttons_layout.addWidget(self.context_toggle_button)
+        top_buttons_layout.addWidget(self.context_toggle_button)
 
-        buttons_layout.addStretch()
+        top_buttons_layout.addStretch()
+        left_layout.addLayout(top_buttons_layout)
+
+        # Bottom row with prompt selector and dropdowns
+        bottom_row_layout = QHBoxLayout()
+        
+        self.prose_prompt_panel = PromptPanel("Prose")
+        self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+        self.prose_prompt_panel.setMaximumWidth(300)
+        bottom_row_layout.addWidget(self.prose_prompt_panel)
+
+        bottom_row_layout.addStretch()
+        
         pulldown_widget = QWidget()
         pulldown_layout = QFormLayout(pulldown_widget)
         pulldown_layout.setContentsMargins(0, 0, 20, 0)
@@ -177,9 +186,9 @@ class RightStack(QWidget):
         self.pov_combo = self.add_combo(pulldown_layout, _("POV"), [_("First Person"), _("Third Person Limited"), _("Omniscient"), _("Custom...")], self.controller.handle_pov_change)
         self.pov_character_combo = self.add_combo(pulldown_layout, _("POV Character"), ["Alice", "Bob", "Charlie", _("Custom...")], self.controller.handle_pov_character_change)
         self.tense_combo = self.add_combo(pulldown_layout, _("Tense"), [_("Past Tense"), _("Present Tense"), _("Custom...")], self.controller.handle_tense_change)
-        buttons_layout.addWidget(pulldown_widget)
+        bottom_row_layout.addWidget(pulldown_widget)
 
-        left_layout.addLayout(buttons_layout)
+        left_layout.addLayout(bottom_row_layout)
         
         # Context panel below the buttons and dropdowns
         self.context_panel = ContextPanel(self.model.structure, self.model.project_name, self.controller, enhanced_window=self.controller.enhanced_window)
