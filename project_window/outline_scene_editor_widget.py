@@ -9,7 +9,7 @@ from settings.theme_manager import ThemeManager
 from .project_tree_widget import ProjectTreeWidget
 from .search_replace_panel import SearchReplacePanel
 from .scene_editor import SceneEditor
-from .bottom_stack import BottomStack
+from .right_stack import RightStack
 
 # gettext '_' fallback for static analysis / standalone edits
 import builtins
@@ -74,8 +74,8 @@ class OutlineSceneEditorWidget(QWidget):
         right_splitter.addWidget(self.scene_editor)
         
         # Bottom stack (LLM controls) - now on the right side
-        self.bottom_stack = BottomStack(self.project_window, self.model, self.icon_tint)
-        right_splitter.addWidget(self.bottom_stack)
+        self.right_stack = RightStack(self.project_window, self.model, self.icon_tint)
+        right_splitter.addWidget(self.right_stack)
         
         # Set stretch factors - editor takes more space than bottom stack
         right_splitter.setStretchFactor(0, 3)
@@ -92,6 +92,6 @@ class OutlineSceneEditorWidget(QWidget):
         """Update icon tint for all child widgets."""
         self.icon_tint = icon_tint
         self.scene_editor.update_tint(icon_tint)
-        self.bottom_stack.update_tint(icon_tint)
+        self.right_stack.update_tint(icon_tint)
         self.search_panel.update_tint(icon_tint)
         self.project_tree.assign_all_icons()

@@ -74,26 +74,26 @@ class ProjectVariableManager(PromptVariableManager):
     def setup_ui_collectors(self, project_window):
         """Setup collectors that depend on UI components."""
         # Get references to UI components
-        bottom_stack = getattr(project_window, 'bottom_stack', None)
+        right_stack = getattr(project_window, 'right_stack', None)
         scene_editor = getattr(project_window, 'scene_editor', None)
         project_tree = getattr(project_window, 'project_tree', None)
         
-        if bottom_stack:
+        if right_stack:
             # POV settings
             self.register_collector('pov', 
-                lambda: getattr(bottom_stack.pov_combo, 'currentText', lambda: "")())
+                lambda: getattr(right_stack.pov_combo, 'currentText', lambda: "")())
             self.register_collector('pov_character', 
-                lambda: getattr(bottom_stack.pov_character_combo, 'currentText', lambda: "")())
+                lambda: getattr(right_stack.pov_character_combo, 'currentText', lambda: "")())
             self.register_collector('tense', 
-                lambda: getattr(bottom_stack.tense_combo, 'currentText', lambda: "")())
+                lambda: getattr(right_stack.tense_combo, 'currentText', lambda: "")())
             
             # Action beats
             self.register_collector('sceneBeat', 
-                lambda: getattr(bottom_stack.prompt_input, 'toPlainText', lambda: "")())
+                lambda: getattr(right_stack.prompt_input, 'toPlainText', lambda: "")())
             
             # Context from context panel
             self.register_collector('context', 
-                lambda: getattr(bottom_stack.context_panel, 'get_selected_context_text', lambda: "")() if hasattr(bottom_stack, 'context_panel') else "")
+                lambda: getattr(right_stack.context_panel, 'get_selected_context_text', lambda: "")() if hasattr(right_stack, 'context_panel') else "")
         
         if scene_editor and project_tree:
             # Current scene text (story so far)

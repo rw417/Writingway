@@ -51,10 +51,10 @@ def send_prompt_with_ui_integration(controller, prompt_config, user_input, addit
     )
     
     # UI state management
-    if hasattr(controller, 'bottom_stack'):
-        controller.bottom_stack.preview_text.clear()
-        controller.bottom_stack.send_button.setEnabled(False)
-        controller.bottom_stack.preview_text.setReadOnly(True)
+    if hasattr(controller, 'right_stack'):
+        controller.right_stack.preview_text.clear()
+        controller.right_stack.send_button.setEnabled(False)
+        controller.right_stack.preview_text.setReadOnly(True)
     
     QApplication.processEvents()
     
@@ -68,12 +68,12 @@ def send_prompt_with_ui_integration(controller, prompt_config, user_input, addit
     if hasattr(controller, 'update_text'):
         controller.worker.data_received.connect(controller.update_text)
     else:
-        controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.bottom_stack.preview_text))
+        controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.right_stack.preview_text))
     
     if hasattr(controller, 'on_finished'):
         controller.worker.finished.connect(controller.on_finished)
     else:
-        controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.bottom_stack.preview_text))
+        controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.right_stack.preview_text))
     
     # Always connect cleanup
     controller.worker.finished.connect(lambda: cleanup_llm_worker(controller))
@@ -87,22 +87,22 @@ def send_prompt_with_ui_integration(controller, prompt_config, user_input, addit
     return True
 
 
-def gather_prompt_data_from_ui(bottom_stack, scene_editor, project_tree):
+def gather_prompt_data_from_ui(right_stack, scene_editor, project_tree):
     """
     Gather all prompt-related data from UI components.
     Now uses the centralized variable system for cleaner variable management.
     
     Args:
-        bottom_stack: BottomStack instance with prompt UI
+        right_stack: RightStack instance with prompt UI
         scene_editor: SceneEditor instance
         project_tree: ProjectTreeWidget instance
     
     Returns:
         dict: Dictionary containing all gathered prompt data
     """
-    action_beats = bottom_stack.prompt_input.toPlainText().strip()
-    prose_config = bottom_stack.prose_prompt_panel.get_prompt()
-    overrides = bottom_stack.prose_prompt_panel.get_overrides()
+    action_beats = right_stack.prompt_input.toPlainText().strip()
+    prose_config = right_stack.prose_prompt_panel.get_prompt()
+    overrides = right_stack.prose_prompt_panel.get_overrides()
     
     # The centralized system now handles all variables automatically
     # No need to manually collect additional_vars, current_scene_text, extra_context
@@ -165,9 +165,9 @@ def stop_llm_worker(controller):
             WWApiAggregator.interrupt()
         
         # Re-enable UI elements
-        if hasattr(controller, 'bottom_stack'):
-            controller.bottom_stack.send_button.setEnabled(True)
-            controller.bottom_stack.preview_text.setReadOnly(False)
+        if hasattr(controller, 'right_stack'):
+            controller.right_stack.send_button.setEnabled(True)
+            controller.right_stack.preview_text.setReadOnly(False)
         
         logging.debug("Calling cleanup_llm_worker")
         cleanup_llm_worker(controller)
@@ -184,9 +184,9 @@ def handle_llm_completion(controller, preview_text_widget):
         controller: The controller object
         preview_text_widget: The QTextEdit widget to display results
     """
-    if hasattr(controller, 'bottom_stack'):
-        controller.bottom_stack.send_button.setEnabled(True)
-        controller.bottom_stack.preview_text.setReadOnly(False)
+    if hasattr(controller, 'right_stack'):
+        controller.right_stack.send_button.setEnabled(True)
+        controller.right_stack.preview_text.setReadOnly(False)
     
     raw_text = preview_text_widget.toPlainText()
     if not raw_text.strip():
@@ -232,13 +232,13 @@ def retry_llm_with_content(controller, prompt_config, user_input, additional_var
         user_input, additional_vars, content, extra_context
     )
     
-    if hasattr(controller, 'bottom_stack'):
-        controller.bottom_stack.preview_text.clear()
-        controller.bottom_stack.preview_text.setReadOnly(True)
+    if hasattr(controller, 'right_stack'):
+        controller.right_stack.preview_text.clear()
+        controller.right_stack.preview_text.setReadOnly(True)
     
     controller.worker = LLMWorker(final_prompt, prompt_config)
-    controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.bottom_stack.preview_text))
-    controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.bottom_stack.preview_text))
+    controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.right_stack.preview_text))
+    controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.right_stack.preview_text))
     controller.worker.finished.connect(lambda: cleanup_llm_worker(controller))
     
     # Connect token limit handler if it exists

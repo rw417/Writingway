@@ -368,8 +368,8 @@ msgstr "新聊天"
 msgid "Type your message here..."
 msgstr "在此输入您的消息..."
 
-#: workshop/workshop.py:155 project_window/bottom_stack.py:54
-#: project_window/bottom_stack.py:112
+#: workshop/workshop.py:155 project_window/right_stack.py:54
+#: project_window/right_stack.py:112
 msgid "Preview the final prompt"
 msgstr "预览最终提示"
 
@@ -610,8 +610,8 @@ msgstr "获取模型错误：{}"
 #: project_window/project_window.py:430 project_window/project_window.py:456
 #: project_window/project_window.py:482 project_window/project_window.py:826
 #: project_window/project_window.py:838 project_window/project_window.py:846
-#: project_window/bottom_stack.py:143 project_window/bottom_stack.py:144
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:143 project_window/right_stack.py:144
+#: project_window/right_stack.py:145
 msgid "Custom..."
 msgstr "自定义..."
 
@@ -1021,7 +1021,7 @@ msgstr "摘要"
 msgid "Summary Error"
 msgstr "摘要错误"
 
-#: project_window/project_model.py:30 project_window/bottom_stack.py:143
+#: project_window/project_model.py:30 project_window/right_stack.py:143
 msgid "Third Person Limited"
 msgstr "第三人称有限"
 
@@ -1030,7 +1030,7 @@ msgid "Character"
 msgstr "角色"
 
 #: project_window/project_model.py:32 project_window/project_window.py:542
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Present Tense"
 msgstr "现在时"
 
@@ -1238,11 +1238,11 @@ msgctxt "verb_tense"
 msgid "Enter custom Tense:"
 msgstr "输入自定义时态："
 
-#: project_window/project_window.py:496 project_window/bottom_stack.py:183
+#: project_window/project_window.py:496 project_window/right_stack.py:183
 msgid "POV: {}"
 msgstr "视角：{}"
 
-#: project_window/project_window.py:497 project_window/bottom_stack.py:185
+#: project_window/project_window.py:497 project_window/right_stack.py:185
 msgid "POV Character: {}"
 msgstr "视角角色：{}"
 
@@ -1333,71 +1333,71 @@ msgstr "未选择要重写的文本。"
 msgid "-- Select Character --"
 msgstr "-- 选择角色 --"
 
-#: project_window/bottom_stack.py:59
+#: project_window/right_stack.py:59
 msgid "Create Summary"
 msgstr "创建摘要"
 
-#: project_window/bottom_stack.py:61
+#: project_window/right_stack.py:61
 msgid "Save Summary"
 msgstr "保存摘要"
 
-#: project_window/bottom_stack.py:77
+#: project_window/right_stack.py:77
 msgid "LLM output preview will appear here..."
 msgstr "LLM 输出预览将显示在此处..."
 
-#: project_window/bottom_stack.py:81
+#: project_window/right_stack.py:81
 msgid "Appends the LLM's output to your current scene"
 msgstr "将 LLM 的输出附加到当前场景"
 
-#: project_window/bottom_stack.py:83
+#: project_window/right_stack.py:83
 msgid "Include Action Beats"
 msgstr "包括动作节拍"
 
-#: project_window/bottom_stack.py:84
+#: project_window/right_stack.py:84
 msgid "Include the text from the Action Beats field in the scene text"
 msgstr "将动作节拍字段中的文本包含在场景文本中"
 
-#: project_window/bottom_stack.py:97
+#: project_window/right_stack.py:97
 msgid "Enter your action beats here..."
 msgstr "在此输入您的动作节拍..."
 
-#: project_window/bottom_stack.py:118
+#: project_window/right_stack.py:118
 msgid "Sends the action beats to the LLM"
 msgstr "将动作节拍发送到 LLM"
 
-#: project_window/bottom_stack.py:124
+#: project_window/right_stack.py:124
 msgid "Stop the LLM processing"
 msgstr "停止 LLM 处理"
 
-#: project_window/bottom_stack.py:130
+#: project_window/right_stack.py:130
 msgid "Toggle context panel"
 msgstr "切换上下文面板"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "POV"
 msgstr "视角"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "First Person"
 msgstr "第一人称"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "Omniscient"
 msgstr "全知"
 
-#: project_window/bottom_stack.py:144
+#: project_window/right_stack.py:144
 msgid "POV Character"
 msgstr "视角角色"
 
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Tense"
 msgstr "时态"
 
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Past Tense"
 msgstr "过去时"
 
-#: project_window/bottom_stack.py:187
+#: project_window/right_stack.py:187
 msgid "Tense: {}"
 msgstr "时态：{}"
 

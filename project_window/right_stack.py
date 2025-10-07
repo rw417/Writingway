@@ -19,7 +19,7 @@ try:
 except NameError:
     _ = lambda s: s
 
-class BottomStack(QWidget):
+class RightStack(QWidget):
     """Stacked widget for summary and LLM panels."""
     def __init__(self, controller, model, tint_color=QColor("black")):
         super().__init__()

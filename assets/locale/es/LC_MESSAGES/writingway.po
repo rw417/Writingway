@@ -368,8 +368,8 @@ msgstr "Nuevo Chat"
 msgid "Type your message here..."
 msgstr "Escribe tu mensaje aquí..."
 
-#: workshop/workshop.py:155 project_window/bottom_stack.py:54
-#: project_window/bottom_stack.py:112
+#: workshop/workshop.py:155 project_window/right_stack.py:54
+#: project_window/right_stack.py:112
 msgid "Preview the final prompt"
 msgstr "Previsualizar el prompt final"
 
@@ -622,8 +622,8 @@ msgstr "Error al obtener modelos: {}"
 #: project_window/project_window.py:430 project_window/project_window.py:456
 #: project_window/project_window.py:482 project_window/project_window.py:826
 #: project_window/project_window.py:838 project_window/project_window.py:846
-#: project_window/bottom_stack.py:143 project_window/bottom_stack.py:144
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:143 project_window/right_stack.py:144
+#: project_window/right_stack.py:145
 msgid "Custom..."
 msgstr "Personalizado..."
 
@@ -1042,7 +1042,7 @@ msgstr "Resumen"
 msgid "Summary Error"
 msgstr "Error de Resumen"
 
-#: project_window/project_model.py:30 project_window/bottom_stack.py:143
+#: project_window/project_model.py:30 project_window/right_stack.py:143
 msgid "Third Person Limited"
 msgstr "Tercera Persona Limitada"
 
@@ -1051,7 +1051,7 @@ msgid "Character"
 msgstr "Personaje"
 
 #: project_window/project_model.py:32 project_window/project_window.py:542
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Present Tense"
 msgstr "Tiempo Presente"
 
@@ -1263,11 +1263,11 @@ msgctxt "verb_tense"
 msgid "Enter custom Tense:"
 msgstr "Ingrese tiempo personalizado:"
 
-#: project_window/project_window.py:496 project_window/bottom_stack.py:183
+#: project_window/project_window.py:496 project_window/right_stack.py:183
 msgid "POV: {}"
 msgstr "POV: {}"
 
-#: project_window/project_window.py:497 project_window/bottom_stack.py:185
+#: project_window/project_window.py:497 project_window/right_stack.py:185
 msgid "POV Character: {}"
 msgstr "Personaje POV: {}"
 
@@ -1360,72 +1360,72 @@ msgstr "No se ha seleccionado texto para reescribir."
 msgid "-- Select Character --"
 msgstr "-- Seleccionar Personaje --"
 
-#: project_window/bottom_stack.py:59
+#: project_window/right_stack.py:59
 msgid "Create Summary"
 msgstr "Crear Resumen"
 
-#: project_window/bottom_stack.py:61
+#: project_window/right_stack.py:61
 msgid "Save Summary"
 msgstr "Guardar Resumen"
 
-#: project_window/bottom_stack.py:77
+#: project_window/right_stack.py:77
 msgid "LLM output preview will appear here..."
 msgstr "La vista previa de la salida del LLM aparecerá aquí..."
 
-#: project_window/bottom_stack.py:81
+#: project_window/right_stack.py:81
 msgid "Appends the LLM's output to your current scene"
 msgstr "Añade la salida del LLM a tu escena actual"
 
-#: project_window/bottom_stack.py:83
+#: project_window/right_stack.py:83
 msgid "Include Action Beats"
 msgstr "Incluir Ritmos de Acción"
 
-#: project_window/bottom_stack.py:84
+#: project_window/right_stack.py:84
 msgid "Include the text from the Action Beats field in the scene text"
 msgstr ""
 "Incluir el texto del campo de Ritmos de Acción en el texto de la escena"
 
-#: project_window/bottom_stack.py:97
+#: project_window/right_stack.py:97
 msgid "Enter your action beats here..."
 msgstr "Ingrese sus ritmos de acción aquí..."
 
-#: project_window/bottom_stack.py:118
+#: project_window/right_stack.py:118
 msgid "Sends the action beats to the LLM"
 msgstr "Envía los ritmos de acción al LLM"
 
-#: project_window/bottom_stack.py:124
+#: project_window/right_stack.py:124
 msgid "Stop the LLM processing"
 msgstr "Detener el procesamiento del LLM"
 
-#: project_window/bottom_stack.py:130
+#: project_window/right_stack.py:130
 msgid "Toggle context panel"
 msgstr "Alternar panel de contexto"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "POV"
 msgstr "POV"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "First Person"
 msgstr "Primera Persona"
 
-#: project_window/bottom_stack.py:143
+#: project_window/right_stack.py:143
 msgid "Omniscient"
 msgstr "Omnisciente"
 
-#: project_window/bottom_stack.py:144
+#: project_window/right_stack.py:144
 msgid "POV Character"
 msgstr "Personaje POV"
 
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Tense"
 msgstr "Tiempo"
 
-#: project_window/bottom_stack.py:145
+#: project_window/right_stack.py:145
 msgid "Past Tense"
 msgstr "Tiempo Pasado"
 
-#: project_window/bottom_stack.py:187
+#: project_window/right_stack.py:187
 msgid "Tense: {}"
 msgstr "Tiempo: {}"
 
