@@ -58,6 +58,8 @@ class PromptVariableManager:
             'context': lambda: "",
             'user_input': lambda: "",
             'selectedText': lambda: "",
+            'additionalInstructions': lambda: "",
+            'outputWordCount': lambda: "200",
         })
 
 class ProjectVariableManager(PromptVariableManager):

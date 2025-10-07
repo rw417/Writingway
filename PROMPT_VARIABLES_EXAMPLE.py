@@ -9,13 +9,15 @@ Built-in Variables (automatically available):
 - {pov_character} - Current POV character name
 - {tense} - Current tense setting (Past Tense, Present Tense, etc.)
 - {story_so_far} - Current scene text (if editing a scene)
-- {instructions} - Action beats text
+- {sceneBeat} - Action beats text
 - {context} - Selected context from compendium
 - {user_input} - Input passed when sending prompt
 - {selectedText} - Currently selected text in editor
 - {projectName} - Name of current project
 - {currentDate} - Current date
 - {wordCount} - Word count of current scene
+- {additionalInstructions} - Additional instructions from Tweaks tab
+- {outputWordCount} - Target word count from Tweaks tab (default: 200)
 
 Example Usage in Prompts:
 """
@@ -35,10 +37,15 @@ Selected text to work with:
 {selectedText}
 
 Action beats to incorporate:
-{instructions}
+{sceneBeat}
 
 Additional context:
 {context}
+
+Additional instructions:
+{additionalInstructions}
+
+Target output length: approximately {outputWordCount} words
 
 User request: {user_input}
 
