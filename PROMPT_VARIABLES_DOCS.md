@@ -131,7 +131,7 @@ Selected text that needs special attention:
 def get_additional_vars(self):
     return {
         "pov": self.pov_combo.currentText(),
-        "instructions": self.prompt_input.toPlainText(),
+        "sceneBeat": self.prompt_input.toPlainText(),
         # ... manual collection
     }
 ```

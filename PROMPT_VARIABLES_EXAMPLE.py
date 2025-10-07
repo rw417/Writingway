@@ -122,7 +122,7 @@ def migration_notes():
     Old way (in get_additional_vars):
     return {
         "pov": self.pov_combo.currentText(),
-        "instructions": self.prompt_input.toPlainText(),
+        "sceneBeat": self.prompt_input.toPlainText(),
         # ... etc
     }
     

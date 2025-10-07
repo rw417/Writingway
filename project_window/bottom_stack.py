@@ -119,14 +119,11 @@ class BottomStack(QWidget):
         self.apply_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/save.svg", self.tint_color))
         self.apply_button.setToolTip(_("Appends the LLM's output to your current scene"))
         self.apply_button.clicked.connect(self.controller.apply_preview)
-        # Add a text box that reads "Additional Instructions"
-        self.additional_instructions = QLineEdit()
-        # self.include_prompt_checkbox = QCheckBox(_("Include Action Beats"))
-        # self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
-        # self.include_prompt_checkbox.setChecked(True)
+        self.include_prompt_checkbox = QCheckBox(_("Include Action Beats"))
+        self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
+        self.include_prompt_checkbox.setChecked(True)
         preview_buttons.addWidget(self.apply_button)
-        preview_buttons.addWidget(QLabel(_("Additional Instructions:")))
-        # preview_buttons.addWidget(self.include_prompt_checkbox)
+        preview_buttons.addWidget(self.include_prompt_checkbox)
         preview_buttons.addStretch()
 
         action_layout = QHBoxLayout()

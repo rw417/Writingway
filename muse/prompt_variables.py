@@ -54,7 +54,7 @@ class PromptVariableManager:
             'pov_character': lambda: "", 
             'tense': lambda: "",
             'story_so_far': lambda: "",
-            'instructions': lambda: "",
+            'sceneBeat': lambda: "",
             'context': lambda: "",
             'user_input': lambda: "",
             'selectedText': lambda: "",
@@ -85,8 +85,8 @@ class ProjectVariableManager(PromptVariableManager):
             self.register_collector('tense', 
                 lambda: getattr(bottom_stack.tense_combo, 'currentText', lambda: "")())
             
-            # Instructions from action beats
-            self.register_collector('instructions', 
+            # Action beats
+            self.register_collector('sceneBeat', 
                 lambda: getattr(bottom_stack.prompt_input, 'toPlainText', lambda: "")())
             
             # Context from context panel

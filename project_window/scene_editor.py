@@ -8,14 +8,307 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QToolBar, QAction, QColorDialog,
     QFontComboBox, QComboBox, QLabel, QMessageBox, QTextEdit, QStyle, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QPen, QKeySequence, QIcon, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QObject, QEvent
+from PyQt5.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QTextBlockFormat, QPen, QKeySequence, QIcon, QPixmap
+
+# Translation function fallback
+import builtins
+if not hasattr(builtins, '_'):
+    def _(text):
+        return text
+    builtins._ = _
 
 from .focus_mode import PlainTextEdit
 from spylls.hunspell import Dictionary
 from util.find_dialog import FindDialog
 from settings.theme_manager import ThemeManager
 from util.color_manager import ColorManager
+
+
+class AutoIndentTextEdit(PlainTextEdit):
+    """Custom text edit that supports auto-indentation for new lines and selections."""
+
+    def __init__(self, scene_editor):
+        super().__init__()
+        self.scene_editor = scene_editor
+        self.auto_indent_enabled = False
+        self.installEventFilter(self)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def set_auto_indent_enabled(self, enabled: bool):
+        self.auto_indent_enabled = enabled
+
+    def apply_auto_indent_to_selection(self):
+        """Indent the currently selected lines once when enabling auto indent."""
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return False
+
+        if self._selection_already_indented(cursor):
+            return False
+
+        self._indent_selection(cursor, only_missing=True)
+        return True
+
+    def indent_selection_or_block(self, only_missing: bool = False) -> bool:
+        """Indent the current selection or single block."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._indent_selection(cursor, only_missing=only_missing)
+            return True
+        return self._indent_current_block(only_missing=only_missing)
+
+    def unindent_selection_or_block(self) -> bool:
+        """Remove a single level of indentation from the selection or block."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return self._unindent_selection(cursor)
+        return self._unindent_current_block()
+
+    def selection_or_block_is_indented(self) -> bool:
+        """Determine if the current selection (or block) starts with an indent unit."""
+        cursor = self.textCursor()
+        indent_unit = self._indent_unit()
+        if cursor.hasSelection():
+            start, end, start_block, end_block = self._selection_blocks(cursor)
+            if start_block is None:
+                return False
+
+            block = start_block
+            while block.isValid():
+                if not self._block_has_indent(block, indent_unit):
+                    return False
+                if block == end_block:
+                    break
+                block = block.next()
+            return True
+
+        block = cursor.block()
+        return self._block_has_indent(block, indent_unit)
+
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):
+        if obj == self and event.type() == QEvent.KeyPress and self.auto_indent_enabled:
+            key = event.key()
+
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self._insert_newline_with_indent()
+                return True
+
+            if key == Qt.Key_Tab:
+                cursor = self.textCursor()
+                if cursor.hasSelection():
+                    self._indent_selection(cursor)
+                else:
+                    cursor.insertText(self._indent_unit())
+                return True
+
+            if key == Qt.Key_Backtab:
+                cursor = self.textCursor()
+                if cursor.hasSelection():
+                    self._unindent_selection(cursor)
+                else:
+                    self._unindent_at_cursor()
+                return True
+
+        return super().eventFilter(obj, event)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _indent_unit(self) -> str:
+        return "    "  # Four spaces as a standard indentation unit
+
+    def _leading_whitespace(self, text: str) -> str:
+        match = re.match(r"^[ \t]*", text)
+        return match.group(0) if match else ""
+
+    def _insert_newline_with_indent(self):
+        cursor = self.textCursor()
+        block = cursor.block()
+        current_indent = self._leading_whitespace(block.text())
+        if not current_indent:
+            current_indent = self._indent_unit()
+
+        cursor.beginEditBlock()
+        cursor.insertText("\n" + current_indent)
+        cursor.endEditBlock()
+
+    def _indent_selection(self, cursor: QTextCursor, only_missing: bool = False):
+        indent_unit = self._indent_unit()
+        start, end, start_block, end_block = self._selection_blocks(cursor)
+        if start_block is None:
+            return
+
+        cursor.beginEditBlock()
+        block = start_block
+        while block.isValid():
+            block_cursor = QTextCursor(block)
+            block_cursor.movePosition(QTextCursor.StartOfBlock)
+            if not only_missing or not self._block_has_indent(block, indent_unit):
+                block_cursor.insertText(indent_unit)
+            if block == end_block:
+                break
+            block = block.next()
+        cursor.endEditBlock()
+
+        # Restore cursor without preserving original selection (simpler UX)
+        new_cursor = self.textCursor()
+        new_cursor.setPosition(end_block.position() + len(end_block.text()))
+        self.setTextCursor(new_cursor)
+
+    def _indent_current_block(self, only_missing: bool = False) -> bool:
+        indent_unit = self._indent_unit()
+        cursor = self.textCursor()
+        block = cursor.block()
+        if block is None:
+            return False
+        if only_missing and self._block_has_indent(block, indent_unit):
+            return False
+
+        original_position = cursor.position()
+        block_start = block.position()
+        offset = original_position - block_start
+
+        cursor.beginEditBlock()
+        cursor.movePosition(QTextCursor.StartOfBlock)
+        cursor.insertText(indent_unit)
+        cursor.endEditBlock()
+
+        new_cursor = self.textCursor()
+        new_cursor.setPosition(block_start + len(indent_unit) + offset)
+        self.setTextCursor(new_cursor)
+        return True
+
+    def _unindent_selection(self, cursor: QTextCursor):
+        indent_unit = self._indent_unit()
+        indent_len = len(indent_unit)
+        start, end, start_block, end_block = self._selection_blocks(cursor)
+        if start_block is None:
+            return False
+
+        changed = False
+        cursor.beginEditBlock()
+        block = start_block
+        while block.isValid():
+            removed = self._remove_leading_indent(block, indent_unit, indent_len)
+            if removed:
+                changed = True
+            if block == end_block:
+                break
+            block = block.next()
+        cursor.endEditBlock()
+
+        new_cursor = self.textCursor()
+        new_cursor.setPosition(end_block.position() + len(end_block.text()))
+        self.setTextCursor(new_cursor)
+        return changed
+
+    def _unindent_at_cursor(self):
+        cursor = self.textCursor()
+        block = cursor.block()
+        indent_unit = self._indent_unit()
+        indent_len = len(indent_unit)
+        original_position = cursor.position()
+        block_start = block.position()
+
+        cursor.beginEditBlock()
+        removed = self._remove_leading_indent(block, indent_unit, indent_len)
+        cursor.endEditBlock()
+
+        if removed:
+            new_cursor = self.textCursor()
+            new_block_start = new_cursor.block().position()
+            offset = max(0, (original_position - block_start) - removed)
+            new_cursor.setPosition(new_block_start + offset)
+            self.setTextCursor(new_cursor)
+
+    def _unindent_current_block(self) -> bool:
+        cursor = self.textCursor()
+        block = cursor.block()
+        if block is None:
+            return False
+        indent_unit = self._indent_unit()
+        indent_len = len(indent_unit)
+        original_position = cursor.position()
+        block_start = block.position()
+
+        cursor.beginEditBlock()
+        removed = self._remove_leading_indent(block, indent_unit, indent_len)
+        cursor.endEditBlock()
+
+        if not removed:
+            return False
+
+        new_cursor = self.textCursor()
+        new_block_start = new_cursor.block().position()
+        offset = max(0, (original_position - block_start) - removed)
+        new_cursor.setPosition(new_block_start + offset)
+        self.setTextCursor(new_cursor)
+        return True
+
+    def _remove_leading_indent(self, block, indent_unit, indent_len):
+        text = block.text()
+        block_cursor = QTextCursor(block)
+        block_cursor.movePosition(QTextCursor.StartOfBlock)
+
+        if text.startswith(indent_unit):
+            block_cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor, indent_len)
+            block_cursor.removeSelectedText()
+            return indent_len
+
+        if text.startswith("\t"):
+            block_cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor, 1)
+            block_cursor.removeSelectedText()
+            return 1
+
+        spaces = len(text) - len(text.lstrip(" "))
+        if spaces:
+            block_cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor, min(spaces, indent_len))
+            block_cursor.removeSelectedText()
+            return min(spaces, indent_len)
+
+        return 0
+
+    def _selection_blocks(self, cursor: QTextCursor):
+        if not cursor.hasSelection():
+            return None, None, None, None
+
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        document = self.document()
+        start_block = document.findBlock(start)
+        end_position = max(start, end - 1)
+        end_block = document.findBlock(end_position)
+        return start, end, start_block, end_block
+
+    def _block_has_indent(self, block, indent_unit: str) -> bool:
+        text = block.text()
+        if not text:
+            return False
+        if text.startswith(indent_unit) or text.startswith("\t"):
+            return True
+        return False
+
+    def _selection_already_indented(self, cursor: QTextCursor) -> bool:
+        indent_unit = self._indent_unit()
+        start, end, start_block, end_block = self._selection_blocks(cursor)
+        if start_block is None:
+            return False
+
+        block = start_block
+        while block.isValid():
+            if not self._block_has_indent(block, indent_unit):
+                return False
+            if block == end_block:
+                break
+            block = block.next()
+        return True
+
 
 class SceneEditor(QWidget):
     """Scene editor with toolbar, text area, and spellchecking support."""
@@ -53,7 +346,7 @@ class SceneEditor(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         self.toolbar = QToolBar("Editor Toolbar")
-        self.editor = PlainTextEdit()
+        self.editor = AutoIndentTextEdit(self)
 
         self.setup_toolbar()
         self.setup_editor()
@@ -105,6 +398,39 @@ class SceneEditor(QWidget):
         )
         self.font_size_combo.setMinimumWidth(60)
         self.toolbar.addWidget(self.font_size_combo)
+        
+        # Line spacing
+        self.toolbar.addWidget(QLabel(_("Line:")))
+        self.line_spacing_combo = QComboBox()
+        self.line_spacing_combo.setEditable(True)  # Allow custom values
+        self.line_spacing_combo.addItems(["1.0", "1.15", "1.5", "2.0", "2.5", "3.0"])
+        self.line_spacing_combo.setCurrentText("1.15")
+        self.line_spacing_combo.currentTextChanged.connect(self.controller.set_line_spacing)
+        self.line_spacing_combo.setMinimumWidth(60)
+        self.line_spacing_combo.setToolTip(_("Line spacing (e.g., 1.0, 1.5, 2.0)"))
+        self.toolbar.addWidget(self.line_spacing_combo)
+        
+        # Paragraph spacing
+        self.toolbar.addWidget(QLabel(_("Para:")))
+        self.paragraph_spacing_combo = QComboBox()
+        self.paragraph_spacing_combo.setEditable(True)  # Allow custom values
+        self.paragraph_spacing_combo.addItems(["0", "6", "12", "18", "24"])
+        self.paragraph_spacing_combo.setCurrentText("12")
+        self.paragraph_spacing_combo.currentTextChanged.connect(self.controller.set_paragraph_spacing)
+        self.paragraph_spacing_combo.setMinimumWidth(50)
+        self.paragraph_spacing_combo.setToolTip(_("Paragraph spacing in pixels (e.g., 0, 12, 24)"))
+        self.toolbar.addWidget(self.paragraph_spacing_combo)
+        
+        # Auto indent toggle
+        self.auto_indent_action = self.add_action(
+            "auto_indent",
+            "assets/icons/list.svg",
+            _("Toggle indentation for the current line or selection."),
+            self.controller.toggle_auto_indent,
+            True
+        )
+        self.auto_indent_action.setChecked(False)
+
         self.toolbar.addSeparator()
 
         # Scene-specific
@@ -149,6 +475,8 @@ class SceneEditor(QWidget):
         e.textChanged.connect(self.start_spellcheck_timer)
         e.cursorPositionChanged.connect(self.update_toolbar_state)
         e.selectionChanged.connect(self.update_toolbar_state)
+        
+
 
         # Adjust viewport margins to prevent scrollbar from obscuring content
         scrollbar_width = e.style().pixelMetric(QStyle.PM_ScrollBarExtent)
@@ -370,11 +698,52 @@ class SceneEditor(QWidget):
         else:
             cf = self.editor.currentCharFormat()
             self.update_toggles(cf)
+        
+        # Update alignment buttons
         aln = cur.blockFormat().alignment()
         self.align_left_action.setChecked(aln == Qt.AlignLeft)
         self.align_center_action.setChecked(aln == Qt.AlignCenter)
         self.align_right_action.setChecked(aln == Qt.AlignRight)
+        
+        # Update line spacing and paragraph spacing controls
+        self.update_spacing_controls(cur)
+
+        # Update auto-indent toggle to reflect current block/selection
+        is_indented = self.editor.selection_or_block_is_indented()
+        self.auto_indent_action.blockSignals(True)
+        self.auto_indent_action.setChecked(is_indented)
+        self.auto_indent_action.blockSignals(False)
+
         self.suppress_updates = False
+
+    def update_spacing_controls(self, cursor):
+        """Update line spacing and paragraph spacing controls based on current cursor position."""
+        block_format = cursor.blockFormat()
+        
+        # Update line spacing combo
+        line_height = block_format.lineHeight()
+        if line_height > 0:
+            if block_format.lineHeightType() == QTextBlockFormat.ProportionalHeight:
+                spacing_value = line_height / 100.0
+                spacing_text = f"{spacing_value:.2f}".rstrip('0').rstrip('.')
+                self.line_spacing_combo.blockSignals(True)
+                self.line_spacing_combo.setCurrentText(spacing_text)
+                self.line_spacing_combo.blockSignals(False)
+        
+        # Update paragraph spacing combo
+        bottom_margin = block_format.bottomMargin()
+        margin_text = str(int(bottom_margin))
+        self.paragraph_spacing_combo.blockSignals(True)
+        self.paragraph_spacing_combo.setCurrentText(margin_text)
+        self.paragraph_spacing_combo.blockSignals(False)
+        
+        # Update font combo to show current font
+        char_format = cursor.charFormat()
+        current_font = char_format.font()
+        if current_font.family():
+            self.font_combo.blockSignals(True)
+            self.font_combo.setCurrentFont(current_font)
+            self.font_combo.blockSignals(False)
 
     def get_selection_formats(self, start, end):
         """
@@ -456,7 +825,8 @@ class SceneEditor(QWidget):
         scene_actions = [
             ("manual_save", "assets/icons/save.svg"),
             ("oh_shit", "assets/icons/share.svg"),
-            ("analysis_editor", "assets/icons/feather.svg")
+            ("analysis_editor", "assets/icons/feather.svg"),
+            ("auto_indent", "assets/icons/list.svg")
         ]
         for name, path in scene_actions:
             action = getattr(self, f"{name}_action", None)

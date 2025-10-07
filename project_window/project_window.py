@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QSplitter, QLabel, QShortcut,
                              QTreeWidgetItem, QTextEdit, QStackedWidget, QHBoxLayout,
                              QVBoxLayout, QFormLayout, QPushButton, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer, QSettings, pyqtSlot
-from PyQt5.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QKeySequence
+from PyQt5.QtGui import QColor, QTextCharFormat, QTextBlockFormat, QFont, QTextCursor, QKeySequence
 from .project_model import ProjectModel
 from .global_toolbar import GlobalToolbar
 from .project_tree_widget import ProjectTreeWidget
@@ -44,10 +44,11 @@ from gettext import pgettext
 import muse.prompt_handler as prompt_handler
 
 # gettext '_' fallback for static analysis / standalone edits
-try:
-    _
-except NameError:
-    _ = lambda s: s
+import builtins
+if not hasattr(builtins, '_'):
+    def _(text):
+        return text
+    builtins._ = _
 
 import PyQt5
 pyqt_dir = os.path.dirname(PyQt5.__file__)
@@ -813,6 +814,64 @@ class ProjectWindow(QMainWindow):
             fmt.setFontPointSize(float(size))
             cursor.mergeCharFormat(fmt)
 
+    def set_line_spacing(self, spacing_text):
+        """Set line spacing for the current paragraph or selection."""
+        try:
+            spacing = float(spacing_text.strip())
+            if spacing <= 0 or spacing > 10:  # Reasonable bounds
+                return
+                
+            cursor = self.scene_editor.editor.textCursor()
+            
+            if cursor.hasSelection():
+                # Apply to all blocks in selection
+                start = cursor.selectionStart()
+                end = cursor.selectionEnd()
+                cursor.setPosition(start)
+                
+                while cursor.position() < end:
+                    block_format = cursor.blockFormat()
+                    block_format.setLineHeight(spacing * 100, QTextBlockFormat.ProportionalHeight)
+                    cursor.setBlockFormat(block_format)
+                    if not cursor.movePosition(QTextCursor.NextBlock):
+                        break
+            else:
+                # Apply to current block
+                block_format = cursor.blockFormat()
+                block_format.setLineHeight(spacing * 100, QTextBlockFormat.ProportionalHeight)
+                cursor.setBlockFormat(block_format)
+        except (ValueError, AttributeError):
+            pass  # Invalid spacing value, ignore
+
+    def set_paragraph_spacing(self, spacing_text):
+        """Set paragraph spacing (space after) for the current paragraph or selection."""
+        try:
+            spacing = float(spacing_text.strip())
+            if spacing < 0 or spacing > 200:  # Reasonable bounds for pixels
+                return
+                
+            cursor = self.scene_editor.editor.textCursor()
+            
+            if cursor.hasSelection():
+                # Apply to all blocks in selection
+                start = cursor.selectionStart()
+                end = cursor.selectionEnd()
+                cursor.setPosition(start)
+                
+                while cursor.position() < end:
+                    block_format = cursor.blockFormat()
+                    block_format.setBottomMargin(spacing)
+                    cursor.setBlockFormat(block_format)
+                    if not cursor.movePosition(QTextCursor.NextBlock):
+                        break
+            else:
+                # Apply to current block
+                block_format = cursor.blockFormat()
+                block_format.setBottomMargin(spacing)
+                cursor.setBlockFormat(block_format)
+        except (ValueError, AttributeError):
+            pass  # Invalid spacing value, ignore
+
     def update_font_family(self, font):
         cursor = self.scene_editor.editor.textCursor()
         if not cursor.hasSelection():
@@ -825,6 +884,22 @@ class ProjectWindow(QMainWindow):
             fmt = QTextCharFormat()
             fmt.setFontFamilies([font.family()])
             cursor.mergeCharFormat(fmt)
+
+    def toggle_auto_indent(self, checked):
+        """Indent or unindent the current selection and sync automatic indentation."""
+        editor = self.scene_editor.editor
+        if not hasattr(editor, "set_auto_indent_enabled"):
+            return
+
+        if checked:
+            editor.indent_selection_or_block(only_missing=True)
+            editor.set_auto_indent_enabled(True)
+        else:
+            editor.unindent_selection_or_block()
+            editor.set_auto_indent_enabled(False)
+
+        # Refresh toolbar state to ensure action reflects the actual indentation
+        self.scene_editor.update_toolbar_state()
 
     def toggle_tts(self):
         if self.tts_playing:

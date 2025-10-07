@@ -6,6 +6,13 @@ from PyQt5.QtWidgets import (
 from muse.prompt_utils import load_prompts
 from settings.llm_worker import LLMWorker
 
+# Translation function fallback
+import builtins
+if not hasattr(builtins, '_'):
+    def _(text):
+        return text
+    builtins._ = _
+
 class RewriteDialog(QDialog):
     """
     A dialog for rewriting a selected passage.
@@ -88,14 +95,33 @@ class RewriteDialog(QDialog):
             return
         index = self.prompt_combo.currentIndex()
         prompt_data = self.prompts[index]
-        prompt_text = prompt_data.get("messages", [])
-        if not prompt_text:
-            QMessageBox.warning(self, _("Rewrite"), _("Selected prompt has no text."))
-            return
+        
+        # Handle chat completion style prompts (messages array)
+        messages = prompt_data.get("messages", [])
+        if messages:
+            # Convert messages array to a formatted prompt text
+            prompt_parts = []
+            for message in messages:
+                role = message.get("role", "")
+                content = message.get("content", "")
+                if role and content:
+                    prompt_parts.append(f"{role}: {content}")
+            
+            if not prompt_parts:
+                QMessageBox.warning(self, _("Rewrite"), _("Selected prompt has no valid messages."))
+                return
+            
+            prompt_text = "\n\n".join(prompt_parts)
+        else:
+            # Fallback to legacy text field for backwards compatibility
+            prompt_text = prompt_data.get("text", "")
+            if not prompt_text:
+                QMessageBox.warning(self, _("Rewrite"), _("Selected prompt has no text or messages."))
+                return
         
         self.new_edit.clear()  # Clear previous rewritten text.
 
-        # Construct final prompt.
+        # Construct final prompt with the original passage appended
         final_prompt = f"{prompt_text}\n\nOriginal Passage:\n{self.orig_edit.toPlainText()}"
         
         # Build the overrides dictionary to force local LLM usage.

@@ -107,7 +107,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         return toolbar
     
     def populate_project_combo(self, project_name = None):
-        """Populate the project pulldown with subdirectories in .\Projects."""
+        """Populate the project pulldown with subdirectories in Projects."""
         projects_path = os.path.join(os.getcwd(), "Projects")
         if not os.path.exists(projects_path):
             os.makedirs(projects_path)
