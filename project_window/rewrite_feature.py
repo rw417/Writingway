@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
 )
 from muse.prompt_utils import load_prompts
 from settings.llm_worker import LLMWorker
+from muse.prompt_preview_dialog import PromptPreviewDialog
 
 # Translation function fallback
 import builtins
@@ -20,7 +21,7 @@ class RewriteDialog(QDialog):
     Features:
       - Displays the original (read-only) text.
       - Provides a dropdown list of available rewrite prompts.
-      - A "Generate Rewrite" button sends the selected prompt and the original passage to the LLM.
+      - A "Preview Prompt" button shows the preview prompt dialog with the selected prompt.
       - Displays the rewritten text for comparison.
       - "Generate" allows re-generation with the same prompt.
       - "Apply" confirms the change (the dialog is accepted) so the caller can replace the selected text.
@@ -31,6 +32,7 @@ class RewriteDialog(QDialog):
         self.original_text = original_text
         self.rewritten_text = ""
         self.worker = None
+        self.controller = parent  # Store parent reference as controller
         self.setWindowTitle(_("Rewrite Selected Text"))
         self.init_ui()
     
@@ -58,10 +60,10 @@ class RewriteDialog(QDialog):
         prompt_layout.addWidget(self.prompt_combo)
         layout.addLayout(prompt_layout)
         
-        # Button to generate the rewrite.
-        self.generate_button = QPushButton(_("Generate Rewrite"))
-        self.generate_button.clicked.connect(self.generate_rewrite)
-        layout.addWidget(self.generate_button)
+        # Button to preview the prompt.
+        self.preview_button = QPushButton(_("Preview Prompt"))
+        self.preview_button.clicked.connect(self.show_preview_prompt)
+        layout.addWidget(self.preview_button)
         
         # Display rewritten text.
         new_label = QLabel(_("Rewritten Text:"))
@@ -89,15 +91,57 @@ class RewriteDialog(QDialog):
     def on_finished(self):
         pass
     
-    def generate_rewrite(self):
-        # Get the selected prompt's text.
+    def show_preview_prompt(self):
+        """Show the preview prompt dialog with the selected rewrite prompt."""
         if not self.prompts:
+            QMessageBox.warning(self, _("Rewrite"), _("No rewrite prompts available."))
             return
+        
         index = self.prompt_combo.currentIndex()
-        prompt_data = self.prompts[index]
+        prompt_config = self.prompts[index]
+        
+        if not prompt_config:
+            QMessageBox.warning(self, _("Rewrite"), _("Invalid prompt configuration."))
+            return
+        
+        # Prepare variables for prompt assembly
+        additional_vars = {
+            'selectedText': self.orig_edit.toPlainText()
+        }
+        
+        # Show the preview dialog
+        try:
+            dialog = PromptPreviewDialog(
+                controller=self.controller,
+                conversation_payload=None,
+                prompt_config=prompt_config,
+                user_input=self.orig_edit.toPlainText(),
+                additional_vars=additional_vars,
+                current_scene_text=None,
+                extra_context=None,
+                parent=self
+            )
+            
+            # Connect signal to handle sending the prompt
+            dialog.promptConfigReady.connect(self.on_prompt_ready)
+            
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, _("Rewrite"), _("Error opening preview dialog: {}").format(str(e)))
+    
+    def on_prompt_ready(self, modified_config):
+        """Handle the prompt being sent from the preview dialog."""
+        # This will be called when the user clicks "Send" in the preview dialog
+        # The modified_config contains any tweaks made in the dialog
+        self.generate_rewrite_with_config(modified_config)
+    
+    def generate_rewrite_with_config(self, prompt_config):
+        """Generate rewrite using the provided prompt configuration."""
+        if not prompt_config:
+            return
         
         # Handle chat completion style prompts (messages array)
-        messages = prompt_data.get("messages", [])
+        messages = prompt_config.get("messages", [])
         if messages:
             # Convert messages array to a formatted prompt text
             prompt_parts = []
@@ -114,7 +158,7 @@ class RewriteDialog(QDialog):
             prompt_text = "\n\n".join(prompt_parts)
         else:
             # Fallback to legacy text field for backwards compatibility
-            prompt_text = prompt_data.get("text", "")
+            prompt_text = prompt_config.get("text", "")
             if not prompt_text:
                 QMessageBox.warning(self, _("Rewrite"), _("Selected prompt has no text or messages."))
                 return
@@ -124,12 +168,12 @@ class RewriteDialog(QDialog):
         # Construct final prompt with the original passage appended
         final_prompt = f"{prompt_text}\n\nOriginal Passage:\n{self.orig_edit.toPlainText()}"
         
-        # Build the overrides dictionary to force local LLM usage.
+        # Build the overrides dictionary
         overrides = {
-            "provider": prompt_data.get("provider", "Local"),
-            "model": prompt_data.get("model", "Local Model"),
-            "max_tokens": prompt_data.get("max_tokens", 2000),
-            "temperature": prompt_data.get("temperature", 1.0)
+            "provider": prompt_config.get("provider", "Local"),
+            "model": prompt_config.get("model", "Local Model"),
+            "max_tokens": prompt_config.get("max_tokens", 2000),
+            "temperature": prompt_config.get("temperature", 1.0)
         }
         
         try:
@@ -145,7 +189,11 @@ class RewriteDialog(QDialog):
     
     def retry_rewrite(self):
         # Re-generate using the same selected prompt.
-        self.generate_rewrite()
+        if not self.prompts:
+            return
+        index = self.prompt_combo.currentIndex()
+        prompt_config = self.prompts[index]
+        self.generate_rewrite_with_config(prompt_config)
     
     def apply_rewrite(self):
         self.rewritten_text = self.new_edit.toPlainText()
