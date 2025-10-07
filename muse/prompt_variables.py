@@ -94,6 +94,26 @@ class ProjectVariableManager(PromptVariableManager):
             # Context from context panel
             self.register_collector('context', 
                 lambda: getattr(right_stack.context_panel, 'get_selected_context_text', lambda: "")() if hasattr(right_stack, 'context_panel') else "")
+
+            # Tweaks widget values (additional instructions, output word count)
+            if hasattr(right_stack, 'tweaks_widget'):
+                tweaks_widget = right_stack.tweaks_widget
+
+                def get_additional_instructions():
+                    edit = getattr(tweaks_widget, 'additional_instructions_edit', None)
+                    if edit and hasattr(edit, 'toPlainText'):
+                        return edit.toPlainText().strip()
+                    return ""
+
+                def get_output_word_count():
+                    combo = getattr(tweaks_widget, 'output_word_count_combo', None)
+                    if combo and hasattr(combo, 'currentText'):
+                        text = combo.currentText().strip()
+                        return text or "200"
+                    return "200"
+
+                self.register_collector('additionalInstructions', get_additional_instructions)
+                self.register_collector('outputWordCount', get_output_word_count)
         
         if scene_editor and project_tree:
             # Current scene text (story so far)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QStackedWidget, QHBoxLayout, QPushButton, 
                             QTextEdit, QComboBox, QSizePolicy,
-                            QFormLayout, QSplitter, QCheckBox, QLineEdit, QLabel)
+                            QFormLayout, QSplitter, QCheckBox, QLineEdit, QLabel, QTabWidget)
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QVariant
 from settings.theme_manager import ThemeManager
@@ -12,6 +12,10 @@ from .summary_model import SummaryModel
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
 from muse.prompt_variables import get_prompt_variables
+from muse.tweaks_widget import TweaksWidget
+from muse.preview_editable_widget import PreviewEditableWidget
+from muse.preview_uneditable_widget import PreviewUneditableWidget
+from copy import deepcopy
 
 # gettext '_' fallback for static analysis / standalone edits
 try:
@@ -34,6 +38,13 @@ class RightStack(QWidget):
             controller.project_tree
         )
         self.summary_controller.progress_updated.connect(self._update_progress)
+        
+        # Temporary prompt config management
+        self.original_prompt_config = None  # The selected prompt config
+        self.temporary_prompt_config = None  # Modified version
+        self.has_custom_edits = False  # Track if temp config differs from original
+        self._suspend_temp_sync = False
+        
         self.init_ui()
         self.project_tree = controller.project_tree
         self.project_tree.tree.currentItemChanged.connect(self._update_summary_mode_visibility)
@@ -111,9 +122,33 @@ class RightStack(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Create stacked widget for swappable preview area
+        self.preview_stack = QStackedWidget()
+        
+        # 1. Default preview text (LLM output)
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setPlaceholderText(_("LLM output preview will appear here..."))
+        self.preview_stack.addWidget(self.preview_text)
+        
+        # 2. Tabbed widget for tweaks and editable preview
+        self.tweak_tab_widget = QTabWidget()
+        self.tweaks_widget = TweaksWidget()
+        self.preview_editable_widget = PreviewEditableWidget()
+        self.tweak_tab_widget.addTab(self.tweaks_widget, _("Tweaks"))
+        self.tweak_tab_widget.addTab(self.preview_editable_widget, _("Edit Prompt"))
+        self.preview_stack.addWidget(self.tweak_tab_widget)
+        
+        # Connect signals for edit tracking (will be connected after widgets are fully loaded)
+        # We'll do this in a delayed fashion to ensure widgets are ready
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self._connect_edit_signals)
+        
+        # 3. Uneditable preview widget (final assembled prompt)
+        self.preview_uneditable_widget = PreviewUneditableWidget()
+        self.preview_stack.addWidget(self.preview_uneditable_widget)
+        
+        # Preview buttons and checkbox
         preview_buttons = QHBoxLayout()
         self.apply_button = QPushButton()
         self.apply_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/save.svg", self.tint_color))
@@ -140,21 +175,38 @@ class RightStack(QWidget):
         # Top button row (above prompt selector)
         top_buttons_layout = QHBoxLayout()
         
+        # NEW: Tweak prompt button (leftmost)
+        self.tweak_prompt_button = QPushButton()
+        self.tweak_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/tool.svg", self.tint_color))
+        self.tweak_prompt_button.setToolTip(_("Tweak selected prompt"))
+        self.tweak_prompt_button.setCheckable(True)
+        self.tweak_prompt_button.clicked.connect(self.toggle_tweak_prompt)
+        top_buttons_layout.addWidget(self.tweak_prompt_button)
+        
+        # NEW: Refresh prompt button
+        self.refresh_prompt_button = QPushButton()
+        self.refresh_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/refresh-cw.svg", self.tint_color))
+        self.refresh_prompt_button.setToolTip(_("Refresh prompt and discard changes"))
+        self.refresh_prompt_button.clicked.connect(self.refresh_prompt)
+        top_buttons_layout.addWidget(self.refresh_prompt_button)
+        
+        # Existing preview button (now toggleable)
         self.preview_button = QPushButton()
         self.preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", self.tint_color))
         self.preview_button.setToolTip(_("Preview the final prompt"))
-        self.preview_button.clicked.connect(self.preview_prompt)
+        self.preview_button.setCheckable(True)
+        self.preview_button.clicked.connect(self.toggle_preview)
         top_buttons_layout.addWidget(self.preview_button)
 
         self.send_button = QPushButton()
         self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg", self.tint_color))
-        self.send_button.setToolTip(_("Sends the action beats to the LLM"))
-        self.send_button.clicked.connect(self.controller.send_prompt)
+        self.send_button.setToolTip(_("Send prompt to LLM"))
+        self.send_button.clicked.connect(self.send_prompt_with_temp_config)
         top_buttons_layout.addWidget(self.send_button)
 
         self.stop_button = QPushButton()
         self.stop_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg", self.tint_color))
-        self.stop_button.setToolTip(_("Stop the LLM processing"))
+        self.stop_button.setToolTip(_("Interrupt the LLM response"))
         self.stop_button.clicked.connect(self.controller.stop_llm)
         top_buttons_layout.addWidget(self.stop_button)
 
@@ -166,6 +218,13 @@ class RightStack(QWidget):
         top_buttons_layout.addWidget(self.context_toggle_button)
 
         top_buttons_layout.addStretch()
+        
+        # NEW: Custom edits indicator label and add padding and use dark blue color
+        self.custom_edits_label = QLabel(_("Using Custom Prompt"))
+        self.custom_edits_label.setStyleSheet("QLabel { color: darkblue; padding: 0 8px; }")
+        self.custom_edits_label.setVisible(False)
+        top_buttons_layout.addWidget(self.custom_edits_label)
+        
         left_layout.addLayout(top_buttons_layout)
 
         # Bottom row with prompt selector and dropdowns
@@ -174,6 +233,8 @@ class RightStack(QWidget):
         self.prose_prompt_panel = PromptPanel("Prose")
         self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         self.prose_prompt_panel.setMaximumWidth(300)
+        # Connect to handle prompt selection changes
+        self.prose_prompt_panel.prompt_combo.currentIndexChanged.connect(self.on_prompt_selected)
         bottom_row_layout.addWidget(self.prose_prompt_panel)
 
         bottom_row_layout.addStretch()
@@ -198,7 +259,7 @@ class RightStack(QWidget):
         left_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         action_layout.addWidget(left_container)
 
-        layout.addWidget(self.preview_text)
+        layout.addWidget(self.preview_stack)  # Changed from self.preview_text
         layout.addLayout(preview_buttons)
         layout.addLayout(action_layout)
         return panel
@@ -209,6 +270,25 @@ class RightStack(QWidget):
         combo.currentIndexChanged.connect(callback)
         layout.addRow(f"{label_text}:", combo)
         return combo
+
+    def _set_bottom_row_dropdowns_enabled(self, enabled: bool):
+        """Enable/disable bottom row dropdowns except provider/model combos."""
+        combo_list = [
+            getattr(self.prose_prompt_panel, 'prompt_combo', None),
+            getattr(self, 'pov_combo', None),
+            getattr(self, 'pov_character_combo', None),
+            getattr(self, 'tense_combo', None),
+        ]
+
+        for combo in combo_list:
+            if combo:
+                combo.setEnabled(enabled)
+
+        # Provider and model selectors remain enabled regardless of preview state
+        for combo in [getattr(self.prose_prompt_panel, 'provider_combo', None),
+                      getattr(self.prose_prompt_panel, 'model_combo', None)]:
+            if combo:
+                combo.setEnabled(True)
     
     def update_tint(self, tint_color):
         self.tint_color = tint_color
@@ -217,6 +297,9 @@ class RightStack(QWidget):
         self.stop_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg", tint_color))
         self.context_toggle_button.setIcon(ThemeManager.get_tinted_icon(
             "assets/icons/book-open.svg" if self.context_panel.isVisible() else "assets/icons/book.svg", tint_color))
+        self.tweak_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/edit.svg", tint_color))
+        self.refresh_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/refresh-cw.svg", tint_color))
+        self.preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", tint_color))
         self.summary_preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", tint_color))
         self.summary_start_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/play-circle.svg", tint_color))
         self.delete_summary_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/trash.svg", tint_color))
@@ -244,45 +327,212 @@ class RightStack(QWidget):
     def get_additional_vars(self):
         """Get additional variables using the centralized variable system."""
         # The centralized system now handles all these variables automatically
-        return get_prompt_variables()
+        vars_dict = get_prompt_variables()
+        
+        # Merge in tweak values if they exist
+        if hasattr(self, 'tweaks_widget'):
+            tweak_values = self.tweaks_widget.get_tweak_values()
+            vars_dict.update(tweak_values)
+        
+        return vars_dict
     
-    def preview_prompt(self):
-        prompt_config = self.prose_prompt_panel.get_prompt()
-        action_beats = self.prompt_input.toPlainText().strip()
-        
-        # The dialog will automatically use the centralized variable system
-        dialog = PromptPreviewDialog(
-            self.controller,
-            prompt_config=prompt_config, 
-            user_input=action_beats)
-        
-        # Connect signal to handle edited prompt config
-        dialog.promptConfigReady.connect(self.handle_edited_prompt_config)
-        
-        dialog.exec_()
-    
-    def handle_edited_prompt_config(self, modified_config):
-        """Handle the edited prompt config from preview dialog and trigger send."""
-        # Store the original prompt to restore it later
-        original_prompt = self.prose_prompt_panel.prompt
-        
+    def _connect_edit_signals(self):
+        """Connect signals for tracking edits to tweaks and preview widgets."""
         try:
-            # Temporarily set the modified config
-            self.prose_prompt_panel.prompt = modified_config
+            if hasattr(self, 'tweaks_widget'):
+                instructions_edit = self.tweaks_widget.findChild(QTextEdit, "additional_instructions_edit")
+                word_count_combo = self.tweaks_widget.findChild(QComboBox, "output_word_count_combo")
+                
+                if instructions_edit:
+                    instructions_edit.textChanged.connect(self.on_temp_config_edited)
+                if word_count_combo:
+                    word_count_combo.currentTextChanged.connect(self.on_temp_config_edited)
             
-            # Set a dummy space in action beats to satisfy validation
-            original_input = self.prompt_input.toPlainText()
-            self.prompt_input.setPlainText(" ")
+            if hasattr(self, 'preview_editable_widget'):
+                self.preview_editable_widget.contentEdited.connect(self.on_temp_config_edited)
+        except Exception as e:
+            print(f"Error connecting edit signals: {e}")
+    
+    def on_prompt_selected(self):
+        """Called when user selects a prompt from the dropdown."""
+        # Reset temporary config when a new prompt is selected
+        self.reset_temporary_config()
+        self.custom_edits_label.setVisible(False)
+    
+    def reset_temporary_config(self):
+        """Reset the temporary config to match the currently selected prompt."""
+        self._suspend_temp_sync = True
+        self.original_prompt_config = self.prose_prompt_panel.get_prompt()
+        
+        # Check if we actually have a valid prompt config
+        if not self.original_prompt_config or not self.original_prompt_config.get("messages"):
+            self.temporary_prompt_config = None
+            self.has_custom_edits = False
+            self.custom_edits_label.setVisible(False)
+            self._suspend_temp_sync = False
+            return
+        
+        self.temporary_prompt_config = deepcopy(self.original_prompt_config)
+        self.has_custom_edits = False
+        self.custom_edits_label.setVisible(False)
+        
+        # Clear tweak widgets
+        if hasattr(self, 'tweaks_widget'):
+            self.tweaks_widget.clear_tweaks()
+        
+        # Reset preview editable widget with the temp config
+        if hasattr(self, 'preview_editable_widget'):
+            self.preview_editable_widget.set_prompt_config(self.temporary_prompt_config)
+
+        self._suspend_temp_sync = False
+    
+    def on_temp_config_edited(self):
+        """Called when user makes changes to tweaks or editable preview."""
+        if self._suspend_temp_sync:
+            return
+
+        if not self.has_custom_edits:
+            self.has_custom_edits = True
+            self.custom_edits_label.setVisible(True)
+        
+        # Note: We'll get the edited config from the widget when we need it
+        # (when toggling preview or sending), not on every edit signal
+        # This avoids unnecessary updates during typing
+        self._sync_editable_prompt_changes()
+
+    def _sync_editable_prompt_changes(self):
+        """Persist editable prompt changes into the temporary config immediately."""
+        if self._suspend_temp_sync:
+            return
+
+        if not hasattr(self, 'preview_editable_widget') or not self.preview_editable_widget:
+            return
+
+        try:
+            edited_config = self.preview_editable_widget.get_edited_config()
+        except Exception:
+            return
+
+        if not edited_config:
+            return
+
+        self.temporary_prompt_config = edited_config
+    
+    def toggle_tweak_prompt(self):
+        """Toggle the tweak prompt tabbed widget."""
+        if self.tweak_prompt_button.isChecked():
+            self.custom_edits_label.setVisible(True)
+            # Show tweak tab widget
+            # First ensure we have a temporary config
+            if not self.temporary_prompt_config:
+                self.reset_temporary_config()
             
-            # Trigger the send button
-            self.send_button.click()
+            # If still no config, show error and uncheck button
+            if not self.temporary_prompt_config:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, _("No Prompt Selected"), 
+                                  _("Please select a prompt first."))
+                self.tweak_prompt_button.setChecked(False)
+                return
             
-        finally:
-            # Restore the original prompt and input immediately
-            # Use QTimer to ensure this happens after the send operation starts
-            from PyQt5.QtCore import QTimer
-            def restore_original():
+            # Update the editable preview with current temp config
+            self.preview_editable_widget.set_prompt_config(self.temporary_prompt_config)
+            
+            # Set to Tweaks tab by default
+            self.tweak_tab_widget.setCurrentIndex(0)
+            
+            # Hide other views
+            self.preview_button.setChecked(False)
+            self._set_bottom_row_dropdowns_enabled(True)
+            
+            self.preview_stack.setCurrentWidget(self.tweak_tab_widget)
+        else:
+            # Hide and return to default view
+            self.preview_stack.setCurrentWidget(self.preview_text)
+    
+    def toggle_preview(self):
+        """Toggle the uneditable preview widget."""
+        if self.preview_button.isChecked():
+            # Show uneditable preview
+            # Hide tweak widget if showing
+            self.tweak_prompt_button.setChecked(False)
+            
+            # Get the config to use - if we have custom edits, get latest from editable widget
+            if self.has_custom_edits:
+                # Get the latest edited config from the editable widget
+                edited_config = self.preview_editable_widget.get_edited_config()
+                if edited_config:
+                    self.temporary_prompt_config = edited_config
+                config_to_use = self.temporary_prompt_config
+            else:
+                config_to_use = self.prose_prompt_panel.get_prompt()
+            
+            # Validate we have a config
+            if not config_to_use or not config_to_use.get("messages"):
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, _("No Prompt Selected"), 
+                                  _("Please select a prompt first."))
+                self.preview_button.setChecked(False)
+                self._set_bottom_row_dropdowns_enabled(True)
+                return
+            
+            # Assemble and show final prompt
+            action_beats = self.prompt_input.toPlainText().strip()
+            additional_vars = self.get_additional_vars()
+            
+            self.preview_uneditable_widget.set_prompt_data(
+                prompt_config=config_to_use,
+                user_input=action_beats,
+                additional_vars=additional_vars,
+                current_scene_text=self.scene_editor.editor.toPlainText(),
+                extra_context=None
+            )
+            
+            self._set_bottom_row_dropdowns_enabled(False)
+
+            self.preview_stack.setCurrentWidget(self.preview_uneditable_widget)
+        else:
+            # Hide and return to default view
+            self._set_bottom_row_dropdowns_enabled(True)
+            self.preview_stack.setCurrentWidget(self.preview_text)
+    
+    def refresh_prompt(self):
+        """Refresh prompt and discard all custom edits."""
+        self.reset_temporary_config()
+        self.custom_edits_label.setVisible(False)
+        
+        # Also hide any special views and return to default
+        self.tweak_prompt_button.setChecked(False)
+        self.preview_button.setChecked(False)
+        self._set_bottom_row_dropdowns_enabled(True)
+        self.preview_stack.setCurrentWidget(self.preview_text)
+    
+    def send_prompt_with_temp_config(self):
+        """Send prompt using temporary config if it has custom edits."""
+        # Always show the LLM output preview before sending
+        if self.preview_button.isChecked():
+            self.preview_button.setChecked(False)
+        if self.tweak_prompt_button.isChecked():
+            self.tweak_prompt_button.setChecked(False)
+        self.preview_stack.setCurrentWidget(self.preview_text)
+        self._set_bottom_row_dropdowns_enabled(True)
+
+        # Get the config to send
+        if self.has_custom_edits and self.temporary_prompt_config:
+            # Apply any final edits from the editable widget
+            edited_config = self.preview_editable_widget.get_edited_config()
+            if edited_config:
+                self.temporary_prompt_config = edited_config
+            
+            # Temporarily set this config in the prompt panel so send_prompt uses it
+            original_prompt = self.prose_prompt_panel.prompt
+            self.prose_prompt_panel.prompt = self.temporary_prompt_config
+            
+            try:
+                self.controller.send_prompt()
+            finally:
+                # Restore original prompt (but keep temporary config for session)
                 self.prose_prompt_panel.prompt = original_prompt
-                self.prompt_input.setPlainText(original_input)
-            
-            QTimer.singleShot(100, restore_original)  # Restore after 100ms
+        else:
+            # No custom edits, send normally
+            self.controller.send_prompt()
