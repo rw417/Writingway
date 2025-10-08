@@ -1,5 +1,6 @@
 import os
 import json
+from util.cursor_manager import enable_tree_hand_cursor
 import re
 import shutil
 from contextlib import suppress
@@ -236,6 +237,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabel(_("Compendium"))
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        enable_tree_hand_cursor(self.tree)
         tree_layout.addWidget(self.tree)
         self.main_splitter.addWidget(self.tree_widget)
     

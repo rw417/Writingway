@@ -1,7 +1,7 @@
 import os
 import uuid
 from copy import deepcopy
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, TYPE_CHECKING
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem,
@@ -11,6 +11,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QFont, QBrush
 from muse.prompt_utils import get_prompt_categories, load_prompts, get_default_prompt, save_prompts
+from util.cursor_manager import enable_tree_hand_cursor
+
+if TYPE_CHECKING:
+    from gettext import gettext as _
 from settings.llm_api_aggregator import WWApiAggregator
 from settings.settings_manager import WWSettingsManager
 from settings.theme_manager import ThemeManager
@@ -110,6 +114,7 @@ class EmbeddedPromptsPanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         self.tree.setIndentation(5)
         self.tree.currentItemChanged.connect(self._on_current_item_changed)
+        enable_tree_hand_cursor(self.tree)
         
         tree_layout.addWidget(self.tree)
         self.splitter.addWidget(self.tree_widget)

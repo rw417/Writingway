@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PyQt5.QtCore import QObject, pyqtSignal, QFileSystemWatcher, QTimer, Qt, QPoint, QEvent
-from PyQt5.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+from PyQt5.QtGui import QColor, QCursor, QSyntaxHighlighter, QTextCharFormat, QTextDocument
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 try:
@@ -377,8 +377,16 @@ class MatchClickController(QObject):
                 self._update_hover_clickable(getattr(event, "pos", lambda: QPoint())())
             elif etype == QEvent.HoverLeave:
                 self._update_hover_clickable(None)
-        elif obj is self._app and self._popup:
-            if event.type() == QEvent.MouseButtonPress:
+        elif obj is self._app:
+            etype = event.type()
+            if etype in (QEvent.MouseMove, QEvent.HoverMove):
+                global_pos_getter = getattr(event, "globalPos", None)
+                if callable(global_pos_getter):
+                    global_pos = global_pos_getter()
+                else:
+                    global_pos = QCursor.pos()
+                self._update_hover_from_global(global_pos)
+            if self._popup and etype == QEvent.MouseButtonPress:
                 target_widget = getattr(event, "widget", lambda: None)()
                 if target_widget and (target_widget is self._popup or self._popup.isAncestorOf(target_widget)):
                     return False
@@ -502,7 +510,7 @@ class MatchClickController(QObject):
             self._global_filter_active = False
         if reset_pressed:
             self._reset_pressed_match()
-        self._update_hover_clickable(None)
+        self._reevaluate_hover_state()
 
     def _on_matches_changed(self, document_id: str) -> None:
         if document_id != self._document_id:
@@ -522,13 +530,30 @@ class MatchClickController(QObject):
             with suppress(RuntimeError, TypeError):
                 self._app.removeEventFilter(self)
             self._global_filter_active = False
-        self._update_hover_clickable(None)
+        self._reevaluate_hover_state()
 
     def _update_hover_clickable(self, pos: Optional[QPoint]) -> None:
         is_clickable = bool(self._match_at_position(pos)) if pos is not None else False
         if is_clickable != self._hover_clickable:
             self._hover_clickable = is_clickable
             set_dynamic_clickable(self._viewport, is_clickable)
+
+    def _update_hover_from_global(self, global_pos: QPoint) -> None:
+        if not getattr(self, "_viewport", None):
+            return
+        local_pos = self._viewport.mapFromGlobal(global_pos)
+        if self._viewport.rect().contains(local_pos):
+            self._update_hover_clickable(local_pos)
+        else:
+            self._update_hover_clickable(None)
+
+    def _reevaluate_hover_state(self) -> None:
+        try:
+            global_pos = QCursor.pos()
+        except RuntimeError:
+            self._update_hover_clickable(None)
+            return
+        self._update_hover_from_global(global_pos)
 
 
 class CompendiumMatchService(QObject):
