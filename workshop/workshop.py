@@ -39,6 +39,12 @@ def _(text):
     return QCoreApplication.translate("WorkshopWindow", text)
 
 
+def _extract_message_text(content):
+    if isinstance(content, dict):
+        return content.get("description", "") or ""
+    return content or ""
+
+
 class WorkshopWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -399,7 +405,7 @@ class WorkshopWindow(QDialog):
                 if isinstance(entry, dict) and entry.get("content"):
                     payload.append({
                         "role": entry.get("role", "system"),
-                        "content": entry.get("content", "")
+                        "content": _extract_message_text(entry.get("content"))
                     })
         else:
             resolved_prompt = prompt_seed
@@ -532,7 +538,7 @@ class WorkshopWindow(QDialog):
             if prompt_messages:
                 user_entry.metadata["prompt_messages"] = deepcopy(prompt_messages)
                 user_entry.metadata["prompt_text"] = "\n\n".join(
-                    entry["content"]
+                    _extract_message_text(entry.get("content"))
                     for entry in prompt_messages
                     if entry.get("role", "system") == "system"
                 )

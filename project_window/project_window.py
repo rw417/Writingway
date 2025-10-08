@@ -5,6 +5,7 @@ import tiktoken
 import re
 import logging
 import threading
+import uuid
 
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QSplitter, QLabel, QShortcut, 
                              QMessageBox, QInputDialog, QApplication, QDialog,
@@ -314,11 +315,20 @@ class ProjectWindow(QMainWindow):
         # Check if character already exists
         for entry in characters_cat.get("entries", []):
             if entry.get("name") == name:
-                entry["content"] = description
+                content = entry.get("content", {})
+                if isinstance(content, dict):
+                    content["description"] = description
+                    entry["content"] = content
+                else:
+                    entry["content"] = {"description": description}
                 break
         else:
             # Add new character entry
-            characters_cat["entries"].append({"name": name, "content": description})
+            characters_cat["entries"].append({
+                "name": name,
+                "content": {"description": description},
+                "uuid": str(uuid.uuid4())
+            })
         
         # Ensure extensions section exists
         if "extensions" not in compendium_data:

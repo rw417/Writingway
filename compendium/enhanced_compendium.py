@@ -82,6 +82,26 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Read saved settings
         self.read_settings()
     
+    @staticmethod
+    def _normalize_entry_content(entry):
+        """Ensure entry['content'] is a dict with a description field."""
+        content = entry.get("content", "")
+        changed = False
+        if isinstance(content, dict):
+            if "description" not in content:
+                content["description"] = ""
+                changed = True
+            normalized = content
+        elif isinstance(content, str):
+            normalized = {"description": content}
+            entry["content"] = normalized
+            changed = True
+        else:
+            normalized = {"description": ""}
+            entry["content"] = normalized
+            changed = True
+        return normalized, changed
+
     def read_settings(self):
         """Read window and splitter settings from QSettings."""
         settings = QSettings("MyCompany", "WritingwayProject")
@@ -245,6 +265,8 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Overview Tab
         self.overview_tab = QWidget()
         overview_layout = QVBoxLayout(self.overview_tab)
+        self.description_label = QLabel(_("Description"))
+        overview_layout.addWidget(self.description_label)
         self.editor = QTextEdit()
         self.editor.setPlaceholderText(_("This is the text the AI can see if you select this entry to be included in the prompt inside the context panel"))
         overview_layout.addWidget(self.editor)
@@ -337,7 +359,9 @@ class EnhancedCompendiumWindow(QMainWindow):
                         "entries": [
                             {
                                 "name": "Readme", 
-                                "content": "This is a dummy entry. You can view and edit extended data in this window."
+                                "content": {
+                                    "description": "This is a dummy entry. You can view and edit extended data in this window."
+                                }
                             }
                         ]
                     }
@@ -365,16 +389,25 @@ class EnhancedCompendiumWindow(QMainWindow):
             
             # Migrate to add uuid if missing
             changed = False
+            content_changed = False
             for cat in self.compendium_data.get("categories", []):
                 for entry in cat.get("entries", []):
                     if "uuid" not in entry:
                         entry["uuid"] = str(uuid.uuid4())
                         changed = True
+                    normalized_content, updated = self._normalize_entry_content(entry)
+                    if updated:
+                        content_changed = True
             if changed:
                 with open(self.compendium_file, "w", encoding="utf-8") as f:
                     json.dump(self.compendium_data, f, indent=2)
                 if DEBUG:
                     print("Added UUIDs to compendium entries and saved.")
+            elif content_changed:
+                with open(self.compendium_file, "w", encoding="utf-8") as f:
+                    json.dump(self.compendium_data, f, indent=2)
+                if DEBUG:
+                    print("Normalized compendium entry content structure and saved.")
             
             if "extensions" not in self.compendium_data:
                 self.compendium_data["extensions"] = {"entries": {}}
@@ -394,7 +427,9 @@ class EnhancedCompendiumWindow(QMainWindow):
                     entry_name = entry.get("name", "Unnamed Entry")
                     entry_item = QTreeWidgetItem(cat_item, [entry_name])
                     entry_item.setData(0, Qt.UserRole, "entry")
-                    entry_item.setData(1, Qt.UserRole, entry.get("content", ""))
+                    normalized_content, _ = self._normalize_entry_content(entry)
+                    entry_item.setData(1, Qt.UserRole, normalized_content.get("description", ""))
+                    entry_item.setData(2, Qt.UserRole, entry.get("uuid"))
                     # Set the entry color based on the first tag if available
                     if entry_name in self.compendium_data["extensions"]["entries"]:
                         extended_data = self.compendium_data["extensions"]["entries"][entry_name]
@@ -760,6 +795,20 @@ OUTPUT FORMAT (JSON only, no commentary):
     def save_ai_analysis(self, ai_compendium):
         """Save AI-generated compendium entries, merging with existing data."""
         try:
+            def normalize_entry_payload(entry):
+                entry_data = dict(entry)
+                content_value = entry_data.get("content", "")
+                if isinstance(content_value, dict):
+                    content_dict = dict(content_value)
+                    if "description" not in content_dict:
+                        content_dict["description"] = ""
+                else:
+                    content_dict = {"description": content_value}
+                entry_data["content"] = content_dict
+                if "uuid" not in entry_data:
+                    entry_data["uuid"] = str(uuid.uuid4())
+                return entry_data
+
             if os.path.exists(self.compendium_file):
                 with open(self.compendium_file, "r", encoding="utf-8") as f:
                     existing = json.load(f)
@@ -773,34 +822,49 @@ OUTPUT FORMAT (JSON only, no commentary):
                         existing_entries = {entry["name"]: entry for entry in existing_categories[new_cat["name"]]["entries"]}
                         for new_entry in new_cat.get("entries", []):
                             entry_name = new_entry["name"]
-                            existing_entries[entry_name] = {
-                                "name": entry_name,
-                                "content": new_entry.get("content", ""),
-                                "relationships": new_entry.get("relationships", []),
-                                "uuid": new_entry.get("uuid", str(uuid.uuid4()))
-                            }
+                            normalized_entry = normalize_entry_payload(new_entry)
+                            normalized_entry["name"] = entry_name
+                            normalized_entry["relationships"] = new_entry.get("relationships", [])
+                            existing_entries[entry_name] = normalized_entry
                             existing["extensions"]["entries"][entry_name] = {
                                 "relationships": new_entry.get("relationships", []),
                                 **existing["extensions"]["entries"].get(entry_name, {})
                             }
                         existing_categories[new_cat["name"]]["entries"] = list(existing_entries.values())
                     else:
-                        existing["categories"].append(new_cat)
+                        normalized_entries = []
                         for entry in new_cat.get("entries", []):
                             entry_name = entry["name"]
+                            normalized_entry = normalize_entry_payload(entry)
+                            normalized_entry["name"] = entry_name
+                            normalized_entry["relationships"] = entry.get("relationships", [])
+                            normalized_entries.append(normalized_entry)
                             existing["extensions"]["entries"][entry_name] = {
                                 "relationships": entry.get("relationships", [])
                             }
+                        existing["categories"].append({
+                            "name": new_cat.get("name", "Unnamed Category"),
+                            "entries": normalized_entries
+                        })
             else:
+                normalized_categories = []
+                extensions_entries = {}
+                for cat in ai_compendium.get("categories", []):
+                    normalized_entries = []
+                    for entry in cat.get("entries", []):
+                        entry_name = entry["name"]
+                        normalized_entry = normalize_entry_payload(entry)
+                        normalized_entry["name"] = entry_name
+                        normalized_entry["relationships"] = entry.get("relationships", [])
+                        normalized_entries.append(normalized_entry)
+                        extensions_entries[entry_name] = {"relationships": entry.get("relationships", [])}
+                    normalized_categories.append({
+                        "name": cat.get("name", "Unnamed Category"),
+                        "entries": normalized_entries
+                    })
                 existing = {
-                    "categories": ai_compendium.get("categories", []),
-                    "extensions": {
-                        "entries": {
-                            entry["name"]: {"relationships": entry.get("relationships", [])}
-                            for cat in ai_compendium.get("categories", [])
-                            for entry in cat.get("entries", [])
-                        }
-                    }
+                    "categories": normalized_categories,
+                    "extensions": {"entries": extensions_entries}
                 }
             with open(self.compendium_file, "w", encoding="utf-8") as f:
                 json.dump(existing, f, indent=2)
@@ -961,6 +1025,8 @@ OUTPUT FORMAT (JSON only, no commentary):
         """Save changes to a specific entry."""
         entry_name = entry_item.text(0)
         entry_item.setData(1, Qt.UserRole, self.editor.toPlainText())
+        if entry_item.data(2, Qt.UserRole) is None:
+            entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
@@ -971,6 +1037,8 @@ OUTPUT FORMAT (JSON only, no commentary):
         if not hasattr(self, 'current_entry') or not hasattr(self, 'current_entry_item'):
             return
         self.current_entry_item.setData(1, Qt.UserRole, self.editor.toPlainText())
+        if self.current_entry_item.data(2, Qt.UserRole) is None:
+            self.current_entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
@@ -1015,14 +1083,33 @@ OUTPUT FORMAT (JSON only, no commentary):
     def get_compendium_data(self):
         """Reconstruct the full compendium data."""
         data = {"categories": []}
+        existing_categories = {cat.get("name"): cat for cat in self.compendium_data.get("categories", [])}
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             cat_item = root.child(i)
-            cat_data = {"name": cat_item.text(0), "entries": []}
+            cat_name = cat_item.text(0)
+            cat_data = {"name": cat_name, "entries": []}
+            existing_entries = {}
+            if cat_name in existing_categories:
+                existing_entries = {entry.get("name"): entry for entry in existing_categories[cat_name].get("entries", [])}
             for j in range(cat_item.childCount()):
                 entry_item = cat_item.child(j)
                 entry_name = entry_item.text(0)
-                cat_data["entries"].append({"name": entry_name, "content": entry_item.data(1, Qt.UserRole)})
+                existing_entry = existing_entries.get(entry_name, {})
+                entry_data = dict(existing_entry) if existing_entry else {}
+                entry_data["name"] = entry_name
+                entry_uuid = entry_item.data(2, Qt.UserRole)
+                if entry_uuid:
+                    entry_data["uuid"] = entry_uuid
+                description = entry_item.data(1, Qt.UserRole) or ""
+                existing_content = entry_data.get("content", {})
+                if isinstance(existing_content, dict):
+                    content_dict = dict(existing_content)
+                    content_dict["description"] = description
+                else:
+                    content_dict = {"description": description}
+                entry_data["content"] = content_dict
+                cat_data["entries"].append(entry_data)
             data["categories"].append(cat_data)
         data["extensions"] = self.compendium_data.get("extensions", {"entries": {}})
         return data
@@ -1033,6 +1120,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             data = self.get_compendium_data()
             with open(self.compendium_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self.compendium_data = data
             if DEBUG:
                 print("Saved compendium data to", self.compendium_file)
             
@@ -1057,6 +1145,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             entry_item = QTreeWidgetItem(category_item, [name])
             entry_item.setData(0, Qt.UserRole, "entry")
             entry_item.setData(1, Qt.UserRole, "")
+            entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
             category_item.setExpanded(True)
             self.tree.setCurrentItem(entry_item)
             self.save_compendium_to_file()
