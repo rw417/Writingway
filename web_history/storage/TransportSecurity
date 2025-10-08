@@ -1,0 +1,14 @@
+{
+   "OQf7znt8uuZAN913+3oddpIl+3rvwMOUXU9mRTyxY9k=": {
+      "expiry": 1791350798.30839,
+      "mode": "force-https",
+      "sts_include_subdomains": true,
+      "sts_observed": 1759814798.308392
+   },
+   "Q+FCtpiGM4NLKIfE4hEPfLkVmtda48FEGW4SDDtrSq0=": {
+      "expiry": 1791350798.128744,
+      "mode": "force-https",
+      "sts_include_subdomains": true,
+      "sts_observed": 1759814798.128745
+   }
+}
