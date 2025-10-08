@@ -23,6 +23,7 @@ _PREVENT_HAND_PROPERTY = "wwPreventHandCursor"
 _CLICKABLE_PROPERTY = "wwClickableHandCursor"
 _TREE_HELPER_ATTR = "_ww_tree_cursor_helper"
 _MENU_HELPER_ATTR = "_ww_menu_cursor_helper"
+_COMBO_HELPER_ATTR = "_ww_combo_cursor_helper"
 
 
 class CursorManager(QObject):
@@ -59,6 +60,9 @@ class CursorManager(QObject):
             # Auto-install menu helper when a menu is shown
             if isinstance(watched, QMenu) and etype == QEvent.Show:
                 enable_menu_hand_cursor(watched)
+            # Auto-install combo popup helper when a combo is shown
+            if isinstance(watched, QComboBox) and etype == QEvent.Show:
+                enable_combo_popup_hand_cursor(watched)
             if etype in (QEvent.Enter, QEvent.HoverEnter, QEvent.HoverMove):
                 self._handle_hover(watched)
             elif etype in (QEvent.Leave, QEvent.HoverLeave):
@@ -87,7 +91,7 @@ class CursorManager(QObject):
             return True
         if widget.property(_CLICKABLE_PROPERTY):
             return True
-        if isinstance(widget, (QTabWidget, QTabBar)):
+        if isinstance(widget, QTabBar):
             return True
         if isinstance(widget, QAbstractButton):
             return True
@@ -270,3 +274,60 @@ def enable_menu_hand_cursor(menu: QMenu) -> None:
         return
     helper = _MenuCursorHelper(menu)
     setattr(menu, _MENU_HELPER_ATTR, helper)
+
+
+class _ComboPopupHelper(QObject):
+    """Monitors a QComboBox's popup view so hovered items show a hand cursor."""
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo)
+        self._combo = combo
+        # Some combos may not have a view yet; guard
+        try:
+            view = combo.view()
+        except Exception:
+            view = None
+        self._view = view
+        if self._view is None:
+            return
+        if hasattr(self._view, "setAttribute"):
+            self._view.setAttribute(Qt.WA_Hover, True)
+        if hasattr(self._view, "setMouseTracking"):
+            self._view.setMouseTracking(True)
+        self._view.installEventFilter(self)
+        self._view.destroyed.connect(self._on_view_destroyed)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is self._view:
+            etype = event.type()
+            if etype in (QEvent.HoverEnter, QEvent.HoverMove, QEvent.MouseMove):
+                getter = getattr(event, "pos", None)
+                if getter is not None:
+                    pos = getter()
+                    if hasattr(pos, "toPoint"):
+                        pos = pos.toPoint()
+                    is_clickable = self._view.indexAt(pos).isValid() if pos is not None else False
+                    set_dynamic_clickable(self._view, bool(is_clickable))
+            elif etype == QEvent.HoverLeave:
+                set_dynamic_clickable(self._view, False)
+        return super().eventFilter(obj, event)
+
+    def _on_view_destroyed(self) -> None:
+        try:
+            set_dynamic_clickable(self._view, False)
+        except RuntimeError:
+            pass
+        if hasattr(self._view, "removeEventFilter"):
+            try:
+                self._view.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._view = None
+
+
+def enable_combo_popup_hand_cursor(combo: QComboBox) -> None:
+    """Install helper for a QComboBox so its popup items show hand cursor."""
+    if getattr(combo, _COMBO_HELPER_ATTR, None) is not None:
+        return
+    helper = _ComboPopupHelper(combo)
+    setattr(combo, _COMBO_HELPER_ATTR, helper)
