@@ -8,9 +8,10 @@ from contextlib import suppress
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QToolBar, QSplitter, QTreeWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QCheckBox, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
-                             QScrollArea, QFormLayout, QGroupBox, QInputDialog, QMenu, QColorDialog, QSizePolicy, QListWidgetItem, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer
-from PyQt5.QtGui import QPixmap, QColor, QBrush, QFont
+                             QScrollArea, QFormLayout, QGroupBox, QInputDialog, QMenu, QColorDialog, QSizePolicy, QListWidgetItem, QDialog, QApplication)
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer, QPoint, QRect
+from PyQt5.QtGui import QPixmap, QColor, QBrush, QFont, QCursor
+from PyQt5.QtCore import QEvent
 import json
 import os
 import re
@@ -48,10 +49,10 @@ def _(s):
 #############################
 class EnhancedCompendiumWindow(QMainWindow):
     # Define a signal that includes the project name
-    compendium_updated = pyqtSignal(str)  # str is the project_name
-
+    compendium_updated = pyqtSignal(str)
     def __init__(self, project_name="default", parent=None):
         super().__init__(parent)
+        
         self.dirty = False
         self.project_name = project_name
         self.controller = parent
@@ -135,6 +136,14 @@ class EnhancedCompendiumWindow(QMainWindow):
             except Exception:
                 # Fall back to previous behaviour if something goes wrong
                 pass
+        # remove app event filter if we installed it
+        try:
+            app = QApplication.instance()
+            if getattr(self, '_app_filter_installed', False) and app is not None:
+                with suppress(RuntimeError, TypeError):
+                    app.removeEventFilter(self)
+        except Exception:
+            pass
         self.write_settings()
         event.accept()
         # Emit the compendium_updated signal
@@ -482,6 +491,21 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.relationships_list.itemDoubleClicked.connect(self.open_related_entry)
         self.add_image_button.clicked.connect(self.add_image)
         self.remove_image_button.clicked.connect(self.remove_selected_image)
+        # Register editable widgets so we can detect global clicks outside them
+        try:
+            self._editable_widgets = [self.editor, self.details_editor, self.alias_line_edit]
+        except Exception:
+            self._editable_widgets = []
+        # Install app-level event filter to intercept clicks outside editable widgets
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+                self._app_filter_installed = True
+            else:
+                self._app_filter_installed = False
+        except Exception:
+            self._app_filter_installed = False
     
     def show_tree_context_menu(self, pos):
         """Display context menu for the tree view."""
@@ -807,6 +831,65 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.tree_controller.update_entry_indicator(entry_item, entry_name, data)
         else:
             TreeController.apply_entry_indicator(entry_item, entry_name, data)
+
+    def eventFilter(self, obj, event):
+        """Intercept global mouse presses and save the current entry if the
+        user clicked outside any registered editable widgets while the
+        editor is dirty.
+        """
+        try:
+            etype = event.type()
+        except Exception:
+            etype = None
+
+        if etype == QEvent.MouseButtonPress and getattr(self, '_editable_widgets', None):
+            # Determine global click position
+            gp = None
+            gp_getter = getattr(event, 'globalPos', None)
+            if callable(gp_getter):
+                try:
+                    gp = gp_getter()
+                except Exception:
+                    gp = None
+            if gp is None:
+                # fallback: try mapping local pos to global using obj
+                pos_getter = getattr(event, 'pos', None)
+                if callable(pos_getter) and hasattr(obj, 'mapToGlobal'):
+                    try:
+                        local = pos_getter()
+                        gp = obj.mapToGlobal(local)
+                    except Exception:
+                        gp = None
+            if gp is None:
+                try:
+                    gp = QCursor.pos()
+                except Exception:
+                    gp = None
+
+            if gp is not None:
+                # If the click is outside all editable widget geometries, attempt save
+                clicked_outside_all = True
+                for w in self._editable_widgets:
+                    try:
+                        if not w:
+                            continue
+                        # map widget rect to global coordinates
+                        rect = QRect(w.mapToGlobal(w.rect().topLeft()), w.mapToGlobal(w.rect().bottomRight()))
+                        if rect.contains(gp):
+                            clicked_outside_all = False
+                            break
+                    except Exception:
+                        # ignore problematic widgets
+                        continue
+
+                if clicked_outside_all and self.dirty:
+                    # Attempt to save; if save fails, return False to allow widgets to handle focus events
+                    try:
+                        self._save_dirty_entry_if_needed()
+                    except Exception:
+                        pass
+
+        return super().eventFilter(obj, event)
     
     def save_entry(self, entry_item):
         """Save changes to a specific entry."""

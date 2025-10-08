@@ -366,6 +366,44 @@ class MatchClickController(QObject):
         self.deleteLater()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        # Universal early check: if a mouse press occurred anywhere and a
+        # popup is shown, close the popup when the press is outside the
+        # popup geometry. Use event.globalPos() when available; otherwise
+        # try to map local coordinates to global as a fallback.
+        try:
+            etype_early = event.type()
+        except Exception:
+            etype_early = None
+        if self._popup and etype_early == QEvent.MouseButtonPress:
+            gp = None
+            gp_getter = getattr(event, "globalPos", None)
+            if callable(gp_getter):
+                try:
+                    gp = gp_getter()
+                except Exception:
+                    gp = None
+            if gp is None:
+                # attempt to map local pos to global if possible
+                pos_getter = getattr(event, "pos", None)
+                if callable(pos_getter) and hasattr(obj, "mapToGlobal"):
+                    try:
+                        local = pos_getter()
+                        gp = obj.mapToGlobal(local)
+                    except Exception:
+                        gp = None
+            if gp is None:
+                # fallback to cursor position
+                try:
+                    gp = QCursor.pos()
+                except Exception:
+                    gp = None
+            if gp is not None:
+                try:
+                    if not self._popup.geometry().contains(gp):
+                        self._close_popup()
+                except Exception:
+                    pass
+
         if obj is self._viewport:
             etype = event.type()
             if etype == QEvent.MouseButtonPress:
