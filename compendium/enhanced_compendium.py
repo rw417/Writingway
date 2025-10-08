@@ -1,6 +1,7 @@
 import os
 import json
 from util.cursor_manager import enable_tree_hand_cursor
+from .compendium_model import CompendiumModel
 import re
 import shutil
 from contextlib import suppress
@@ -8,13 +9,16 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QToolBar, QSplitter, QTreeWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QCheckBox, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
                              QScrollArea, QFormLayout, QGroupBox, QInputDialog, QMenu, QColorDialog, QSizePolicy, QListWidgetItem, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QFileSystemWatcher, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer
 from PyQt5.QtGui import QPixmap, QColor, QBrush, QFont
 import json
 import os
 import re
 import uuid
 from langchain.prompts import PromptTemplate
+from .ai_integration import preprocess_json_string, repair_incomplete_json, analyze_scene_with_llm
+from .tree_controller import TreeController
+from .watcher import CompendiumWatcher
 
 try:
     import sip  # type: ignore[import]
@@ -26,6 +30,10 @@ from settings.llm_api_aggregator import WWApiAggregator
 from settings.settings_manager import WWSettingsManager
 from settings.theme_manager import ThemeManager
 from settings.llm_settings_dialog import LLMSettingsDialog
+import logging
+
+logger = logging.getLogger(__name__)
+from .ui_helpers import is_item_valid
 
 DEBUG = False
 
@@ -48,9 +56,13 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.project_name = project_name
         self.controller = parent
         self.project_window = parent  # For compatibility with AI analysis feature
-        self.file_watcher = QFileSystemWatcher(self)
-        self.file_watcher.fileChanged.connect(self._on_compendium_path_changed)
-        self.file_watcher.directoryChanged.connect(self._on_compendium_path_changed)
+        # Use CompendiumWatcher to debounce file system events
+        try:
+            self.file_watcher = CompendiumWatcher(self)
+            self.file_watcher.set_callback(self._on_compendium_path_changed)
+        except Exception:
+            # fallback to None in headless or constrained environments
+            self.file_watcher = None
         self._reload_timer = QTimer(self)
         self._reload_timer.setSingleShot(True)
         self._reload_timer.setInterval(250)
@@ -93,26 +105,6 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Read saved settings
         self.read_settings()
     
-    @staticmethod
-    def _normalize_entry_content(entry):
-        """Ensure entry['content'] is a dict with a description field."""
-        content = entry.get("content", "")
-        changed = False
-        if isinstance(content, dict):
-            if "description" not in content:
-                content["description"] = ""
-                changed = True
-            normalized = content
-        elif isinstance(content, str):
-            normalized = {"description": content}
-            entry["content"] = normalized
-            changed = True
-        else:
-            normalized = {"description": ""}
-            entry["content"] = normalized
-            changed = True
-        return normalized, changed
-
     def read_settings(self):
         """Read window and splitter settings from QSettings."""
         settings = QSettings("MyCompany", "WritingwayProject")
@@ -136,7 +128,13 @@ class EnhancedCompendiumWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event to save settings and any unsaved changes."""
         if self.dirty and hasattr(self, 'current_entry') and hasattr(self, 'current_entry_item'):
-            self.save_current_entry()
+            # Consolidated save: always use save_entry(path) so editor content
+            # is copied into the tree item before serializing.
+            try:
+                self.save_entry(self.current_entry_item)
+            except Exception:
+                # Fall back to previous behaviour if something goes wrong
+                pass
         self.write_settings()
         event.accept()
         # Emit the compendium_updated signal
@@ -144,6 +142,55 @@ class EnhancedCompendiumWindow(QMainWindow):
 
     def mark_dirty(self):
         self.dirty = True
+
+    def _save_dirty_entry_if_needed(self) -> bool:
+        """Persist the current entry if unsaved changes are present.
+
+        Returns True on success (or if no save was necessary). If saving fails,
+        a warning is displayed and False is returned so callers can abort the
+        operation that triggered the save attempt.
+        """
+        if not self.dirty:
+            return True
+        if not hasattr(self, "current_entry") or not hasattr(self, "current_entry_item"):
+            self.dirty = False
+            return True
+        item = self.current_entry_item
+        if not self._is_item_valid(item):
+            # Attempt to re-acquire the tree item by name; if it no longer
+            # exists we simply clear the dirty flag and proceed.
+            item = self.find_and_select_entry(self.current_entry)
+            if item is None:
+                self.dirty = False
+                return True
+            self.current_entry_item = item
+        try:
+            self.save_entry(item)
+            return True
+        except Exception as exc:
+            if DEBUG:
+                logger.exception("Failed to save dirty entry before operation: %s", exc)
+            QMessageBox.warning(self, _("Error"), _("Failed to save current entry: {}").format(str(exc)))
+            return False
+
+    def _rebind_current_entry_item(self) -> None:
+        """Refresh the cached tree item for the current entry after repopulating."""
+        if hasattr(self, "current_entry"):
+            item = self.find_and_select_entry(self.current_entry)
+            if item is not None:
+                self.current_entry_item = item
+            else:
+                # The entry may have been removed; clear UI state to stay in sync.
+                self.clear_entry_ui()
+
+    def _find_category_item(self, category_name: str):
+        """Return the QTreeWidgetItem for the given category name, if present."""
+        root = self.tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            cat_item = root.child(i)
+            if cat_item.text(0) == category_name and cat_item.data(0, Qt.UserRole) == "category":
+                return cat_item
+        return None
     
     def create_toolbar(self):
         toolbar = QToolBar(_("Project Toolbar"), self)
@@ -207,13 +254,9 @@ class EnhancedCompendiumWindow(QMainWindow):
 
     def select_first_entry(self):
         """Select the first non-category entry in the tree."""
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            if cat_item.childCount() > 0:
-                entry_item = cat_item.child(0)
-                if entry_item.data(0, Qt.UserRole) == "entry":
-                    self.tree.setCurrentItem(entry_item)
-                    return
+        if getattr(self, 'tree_controller', None):
+            return self.tree_controller.select_first_entry()
+        return TreeController.select_first_entry_in_tree(self.tree)
     
     def change_project(self, new_project):
         self.project_name = new_project
@@ -229,7 +272,23 @@ class EnhancedCompendiumWindow(QMainWindow):
         if not os.path.exists(project_dir):
             os.makedirs(project_dir)
         if DEBUG:
-            print("Loading compendium from:", self.compendium_file)
+            logger.debug("Loading compendium from: %s", self.compendium_file)
+        # Create a model to manage compendium data and I/O
+        self.model = CompendiumModel(self.compendium_file)
+        try:
+            self.model.load()
+        except Exception:
+            # Ensure model has a sane default if load fails
+            self.model = CompendiumModel(self.compendium_file)
+            self.model.save()
+        # expose compendium_data for backward compatibility
+        self.compendium_data = self.model.as_data()
+        # Create a TreeController to manage the tree view
+        try:
+            self.tree_controller = TreeController(self.tree, self.model)
+        except Exception:
+            # If tree controller cannot be created (during tests/headless), continue without it
+            self.tree_controller = None
         self._reset_compendium_watchers()
     
     def create_tree_view(self):
@@ -248,94 +307,31 @@ class EnhancedCompendiumWindow(QMainWindow):
     
     def create_center_panel(self):
         """Create the center panel with a header and a tabbed view for content, details, relationships, and images."""
-        self.center_widget = QWidget()
-        center_layout = QVBoxLayout(self.center_widget)
-        
-        # Header
-        self.header_widget = QWidget()
-        header_layout = QHBoxLayout(self.header_widget)
-        self.entry_name_label = QLabel(_("No entry selected"))
-        self.entry_name_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
-        header_layout.addWidget(self.entry_name_label)
-        header_layout.addStretch()
-        self.save_button = QPushButton(_("Save Changes"))
-        header_layout.addWidget(self.save_button)
-        center_layout.addWidget(self.header_widget)
+        # Use EntryEditor to encapsulate the center panel
+        from .entry_editor import EntryEditor
 
-        # Entry metadata controls
-        self.metadata_widget = QWidget()
-        metadata_layout = QFormLayout(self.metadata_widget)
-        self.alias_line_edit = QLineEdit()
-        self.alias_line_edit.setPlaceholderText(_("Aliases (comma-separated)"))
-        metadata_layout.addRow(_("Aliases:"), self.alias_line_edit)
-        self.track_checkbox = QCheckBox(_("Track by name"))
-        self.track_checkbox.setChecked(True)
-        metadata_layout.addRow("", self.track_checkbox)
-        center_layout.addWidget(self.metadata_widget)
-        
-        # Tabs
-        self.tabs = QTabWidget()
-        
-        # Overview Tab
-        self.overview_tab = QWidget()
-        overview_layout = QVBoxLayout(self.overview_tab)
-        self.description_label = QLabel(_("Description"))
-        overview_layout.addWidget(self.description_label)
-        self.editor = QTextEdit()
-        self.editor.setPlaceholderText(_("This is the text the AI can see if you select this entry to be included in the prompt inside the context panel"))
-        overview_layout.addWidget(self.editor)
-        self.tabs.addTab(self.overview_tab, _("Overview"))
-        self.tabs.setTabToolTip(0, _("this is the text the AI can see if you select this entry to be included in the prompt inside the context panel"))
-        
-        # Details Tab – now a single text editor
-        self.details_editor = QTextEdit()
-        self.details_editor.setPlaceholderText(_("Enter details about your entry here... (details about your entry the AI can't see - this info is only for you)"))
-        self.tabs.addTab(self.details_editor, _("Details"))
-        self.tabs.setTabToolTip(1, _("details about your entry the AI can't see - this info is only for you"))
-        
-        # Relationships Tab
-        self.relationships_tab = QWidget()
-        relationships_layout = QVBoxLayout(self.relationships_tab)
-        add_rel_group = QGroupBox(_("Add Relationship"))
-        add_rel_layout = QFormLayout(add_rel_group)
-        self.rel_entry_combo = QComboBox()
-        self.rel_type_combo = QComboBox()
-        self.rel_type_combo.addItems([_("Friend"), _("Family"), _("Ally"), _("Enemy"), _("Acquaintance"), _("Other")])
-        self.rel_type_combo.setEditable(True)
-        self.add_rel_button = QPushButton(_("Add"))
-        add_rel_layout.addRow(_("Related Entry:"), self.rel_entry_combo)
-        add_rel_layout.addRow(_("Relationship Type:"), self.rel_type_combo)
-        add_rel_layout.addRow("", self.add_rel_button)
-        relationships_layout.addWidget(add_rel_group)
-        self.relationships_list = QTreeWidget()
-        self.relationships_list.setHeaderLabels([_("Entry"), _("Relationship Type")])
-        self.relationships_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        relationships_layout.addWidget(self.relationships_list)
-        self.tabs.addTab(self.relationships_tab, _("Relationships"))
-        self.tabs.setTabToolTip(2, _("details about relationships between entries, not visible to the AI"))
-        
-        # Images Tab
-        self.images_tab = QWidget()
-        images_layout = QVBoxLayout(self.images_tab)
-        image_controls = QWidget()
-        image_controls_layout = QHBoxLayout(image_controls)
-        self.add_image_button = QPushButton(_("Add Image"))
-        self.remove_image_button = QPushButton(_("Remove Selected"))
-        self.remove_image_button.setEnabled(False)
-        image_controls_layout.addWidget(self.add_image_button)
-        image_controls_layout.addWidget(self.remove_image_button)
-        image_controls_layout.addStretch()
-        images_layout.addWidget(image_controls)
-        self.image_scroll = QScrollArea()
-        self.image_scroll.setWidgetResizable(True)
-        self.image_container = QWidget()
-        self.image_layout = QVBoxLayout(self.image_container)
-        self.image_scroll.setWidget(self.image_container)
-        images_layout.addWidget(self.image_scroll)
-        self.tabs.addTab(self.images_tab, _("Images"))
-        self.tabs.setTabToolTip(3, _("add images for your entries - not visible to the AI"))
-        
-        center_layout.addWidget(self.tabs)
+        self.center_widget = EntryEditor(self)
+        # Maintain compatibility with attribute names used elsewhere
+        self.entry_name_label = self.center_widget.entry_name_label
+        self.save_button = self.center_widget.save_button
+        self.alias_line_edit = self.center_widget.alias_line_edit
+        self.track_checkbox = self.center_widget.track_checkbox
+        self.editor = self.center_widget.editor
+        self.details_editor = self.center_widget.details_editor
+        self.relationships_list = self.center_widget.relationships_list
+        # expose relationship controls for compatibility
+        self.rel_entry_combo = self.center_widget.rel_entry_combo
+        self.rel_type_combo = self.center_widget.rel_type_combo
+        self.add_rel_button = self.center_widget.add_rel_button
+        # expose image control buttons
+        self.add_image_button = self.center_widget.add_image_button
+        self.remove_image_button = self.center_widget.remove_image_button
+        self.image_container = self.center_widget.image_container
+        self.image_scroll = self.center_widget.image_scroll
+        self.tabs = self.center_widget.tabs
+
+    # image button attributes mapped
+
         self.main_splitter.addWidget(self.center_widget)
     
     def create_right_panel(self):
@@ -362,103 +358,50 @@ class EnhancedCompendiumWindow(QMainWindow):
     
     def populate_compendium(self):
         """Load compendium data from the file and populate the UI."""
-        self.tree.clear()
-        if not os.path.exists(self.compendium_file):
-            if DEBUG:
-                print("Compendium file not found, creating default structure")
-            default_data = {
-                "categories": [
-                    {
-                        "name": "Characters", 
-                        "entries": [
-                            {
-                                "name": "Readme", 
-                                "content": {
-                                    "description": "This is a dummy entry. You can view and edit extended data in this window."
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "extensions": {
-                    "entries": {}
-                }
-            }
-            try:
-                with open(self.compendium_file, "w", encoding="utf-8") as f:
-                    json.dump(default_data, f, indent=2)
-                if DEBUG:
-                    print("Created default compendium data at", self.compendium_file)
-            except Exception as e:
-                if DEBUG:
-                    print("Error creating default compendium file:", e)
-                QMessageBox.warning(self, _("Error"), _("Failed to create default compendium file: {}").format(str(e)))
-                return
-        
+    # populate_compendium
+        # Prefer using the TreeController to populate the tree if available
         try:
-            with open(self.compendium_file, "r", encoding="utf-8") as f:
-                self.compendium_data = json.load(f)
-            if DEBUG:
-                print("Loaded compendium data")
-            
-            # Migrate to add uuid if missing
-            changed = False
-            content_changed = False
-            for cat in self.compendium_data.get("categories", []):
-                for entry in cat.get("entries", []):
-                    if "uuid" not in entry:
-                        entry["uuid"] = str(uuid.uuid4())
-                        changed = True
-                    normalized_content, updated = self._normalize_entry_content(entry)
-                    if updated:
-                        content_changed = True
-            if changed:
-                with open(self.compendium_file, "w", encoding="utf-8") as f:
-                    json.dump(self.compendium_data, f, indent=2)
-                if DEBUG:
-                    print("Added UUIDs to compendium entries and saved.")
-            elif content_changed:
-                with open(self.compendium_file, "w", encoding="utf-8") as f:
-                    json.dump(self.compendium_data, f, indent=2)
-                if DEBUG:
-                    print("Normalized compendium entry content structure and saved.")
-            
-            if "extensions" not in self.compendium_data:
-                self.compendium_data["extensions"] = {"entries": {}}
-            elif "entries" not in self.compendium_data["extensions"]:
-                self.compendium_data["extensions"]["entries"] = {}
-            
-            # Populate tree view from categories and set entry colors
-            bold_font = QFont()
-            bold_font.setBold(True)
-            for cat in self.compendium_data.get("categories", []):
-                cat_item = QTreeWidgetItem(self.tree, [cat.get("name", "Unnamed Category")])
-                cat_item.setData(0, Qt.UserRole, "category")
-                cat_item.setFont(0, bold_font)
-                # Set background color from ThemeManager
-                cat_item.setBackground(0, QBrush(ThemeManager.get_category_background_color()))
-                for entry in cat.get("entries", []):
-                    entry_name = entry.get("name", "Unnamed Entry")
-                    entry_item = QTreeWidgetItem(cat_item, [entry_name])
-                    entry_item.setData(0, Qt.UserRole, "entry")
-                    normalized_content, _ = self._normalize_entry_content(entry)
-                    entry_item.setData(1, Qt.UserRole, normalized_content.get("description", ""))
-                    entry_item.setData(2, Qt.UserRole, entry.get("uuid"))
-                    # Set the entry color based on the first tag if available
-                    if entry_name in self.compendium_data["extensions"]["entries"]:
-                        extended_data = self.compendium_data["extensions"]["entries"][entry_name]
-                        tags = extended_data.get("tags", [])
-                        if tags:
-                            first_tag = tags[0]
-                            tag_color = first_tag["color"] if isinstance(first_tag, dict) else "#000000"
-                            entry_item.setForeground(0, QBrush(QColor(tag_color)))
-                cat_item.setExpanded(True)
-            self.update_relation_combo()
-            
+            self.compendium_data = self.model.as_data()
+            if getattr(self, 'tree_controller', None):
+                self.tree_controller.populate_tree()
+            else:
+                # Fallback to inline population for environments without TreeController
+                self.tree.clear()
+                bold_font = QFont()
+                bold_font.setBold(True)
+                for cat in self.compendium_data.get("categories", []):
+                    cat_item = QTreeWidgetItem(self.tree, [cat.get("name", "Unnamed Category")])
+                    cat_item.setData(0, Qt.UserRole, "category")
+                    cat_item.setFont(0, bold_font)
+                    cat_item.setBackground(0, QBrush(ThemeManager.get_category_background_color()))
+                    for entry in cat.get("entries", []):
+                        entry_name = entry.get("name", "Unnamed Entry")
+                        entry_item = QTreeWidgetItem(cat_item, [entry_name])
+                        entry_item.setData(0, Qt.UserRole, "entry")
+                        normalized_content, changed_flag = self.model.normalize_entry_content(entry)
+                        entry_item.setData(1, Qt.UserRole, normalized_content.get("description", ""))
+                        entry_item.setData(2, Qt.UserRole, entry.get("uuid"))
+                        if entry_name in self.compendium_data.get("extensions", {}).get("entries", {}):
+                            extended_data = self.compendium_data["extensions"]["entries"][entry_name]
+                            tags = extended_data.get("tags", [])
+                            if tags:
+                                first_tag = tags[0]
+                                tag_color = first_tag["color"] if isinstance(first_tag, dict) else "#000000"
+                                entry_item.setForeground(0, QBrush(QColor(tag_color)))
+                    cat_item.setExpanded(True)
+            # Update relations UI
+            # update relation combo
+            if getattr(self, 'tree_controller', None):
+                try:
+                    self.tree_controller.update_relation_combo_items(self.rel_entry_combo)
+                except Exception as ex:
+                    raise
+            else:
+                self.update_relation_combo()
             self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
-                print("Error loading compendium data:", e)
+                logger.exception("Error populating compendium from model: %s", e)
             QMessageBox.warning(self, _("Error"), _("Failed to load compendium data: {}").format(str(e)))
             self._reset_compendium_watchers()
 
@@ -466,24 +409,21 @@ class EnhancedCompendiumWindow(QMainWindow):
         if not hasattr(self, "file_watcher") or self.file_watcher is None:
             return
         watcher = self.file_watcher
-        # Remove existing paths to avoid duplicates when the file is rewritten
-        watcher.blockSignals(True)
-        for path in list(watcher.files()):
-            watcher.removePath(path)
-        for path in list(watcher.directories()):
-            watcher.removePath(path)
-        watcher.blockSignals(False)
-
-        if getattr(self, "compendium_file", None):
-            compendium_dir = os.path.dirname(self.compendium_file)
-            if os.path.isdir(compendium_dir):
-                watcher.addPath(compendium_dir)
-            if os.path.exists(self.compendium_file):
-                watcher.addPath(self.compendium_file)
+        try:
+            watcher.clear()
+            if getattr(self, "compendium_file", None):
+                compendium_dir = os.path.dirname(self.compendium_file)
+                if os.path.isdir(compendium_dir):
+                    watcher.add_watch(compendium_dir)
+                if os.path.exists(self.compendium_file):
+                    watcher.add_watch(self.compendium_file)
+        except Exception:
+            # ignore watcher errors in constrained environments
+            pass
 
     def _on_compendium_path_changed(self, _path):
         if DEBUG:
-            print("Compendium file change detected; scheduling reload")
+            logger.debug("Compendium file change detected; scheduling reload")
         self._reset_compendium_watchers()
         if self.dirty:
             self._pending_external_reload = True
@@ -513,6 +453,9 @@ class EnhancedCompendiumWindow(QMainWindow):
     
     def update_relation_combo(self):
         """Populate the relationship combo box with available entries."""
+        if getattr(self, 'tree_controller', None):
+            self.tree_controller.update_relation_combo_items(self.rel_entry_combo)
+            return
         self.rel_entry_combo.clear()
         for i in range(self.tree.topLevelItemCount()):
             cat_item = self.tree.topLevelItem(i)
@@ -526,7 +469,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.tree.customContextMenuRequested.connect(self.show_tree_context_menu)
         self.tree.currentItemChanged.connect(self.on_item_changed)
         self.search_bar.textChanged.connect(self.filter_tree)
-        self.save_button.clicked.connect(self.save_current_entry)
+        self.save_button.clicked.connect(self.on_save_button_clicked)
         self.add_tag_button.clicked.connect(self.add_tag)
         self.tag_input.returnPressed.connect(self.add_tag)
         self.editor.textChanged.connect(self.mark_dirty)
@@ -542,99 +485,99 @@ class EnhancedCompendiumWindow(QMainWindow):
     
     def show_tree_context_menu(self, pos):
         """Display context menu for the tree view."""
+        from .menu_helpers import build_tree_menu
         item = self.tree.itemAt(pos)
-        menu = QMenu(self)
-        if item is None:
-            action_new_category = menu.addAction(_("New Category"))
-            menu.addSeparator()
-            action_analyze = menu.addAction(_("Analyze Scene with AI"))
-            action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
-            if action == action_new_category:
-                self.new_category()
-            elif action == action_analyze:
-                self.analyze_scene_with_ai()
+        original_item_name = item.text(0) if self._is_item_valid(item) else None
+        original_item_type = item.data(0, Qt.UserRole) if self._is_item_valid(item) else None
+        menu = build_tree_menu(self, item)
+        action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        if action is None:
             return
-        item_type = item.data(0, Qt.UserRole)
+        text = action.text()
+        # Map selected text to handlers (keeps logic centralized and easy to change)
+        if text == _("New Category"):
+            self.new_category()
+            return
+        if text == _("Analyze Scene with AI"):
+            self.analyze_scene_with_ai()
+            return
+        # For item-specific actions, handle via text mapping
+        if not self._is_item_valid(item):
+            item = None
+        if item is None:
+            if original_item_type == "entry" and original_item_name:
+                item = self.find_and_select_entry(original_item_name)
+            elif original_item_type == "category" and original_item_name:
+                item = self._find_category_item(original_item_name)
+        if not self._is_item_valid(item):
+            return
+        item_type = original_item_type if original_item_type is not None else item.data(0, Qt.UserRole)
         if item_type == "category":
-            action_new = menu.addAction(_("New Entry"))
-            action_delete = menu.addAction(_("Delete Category"))
-            action_rename = menu.addAction(_("Rename Category"))
-            action_move_up = menu.addAction(_("Move Up"))
-            action_move_down = menu.addAction(_("Move Down"))
-            action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
-            if action == action_new:
+            if text == _("New Entry"):
                 self.new_entry(item)
-            elif action == action_delete:
+            elif text == _("Delete Category"):
                 self.delete_category(item)
-            elif action == action_rename:
+            elif text == _("Rename Category"):
                 self.rename_item(item, "category")
-            elif action == action_move_up:
+            elif text == _("Move Up"):
                 self.move_item(item, "up")
-            elif action == action_move_down:
+            elif text == _("Move Down"):
                 self.move_item(item, "down")
         elif item_type == "entry":
-            action_save = menu.addAction(_("Save Entry"))
-            action_delete = menu.addAction(_("Delete Entry"))
-            action_rename = menu.addAction(_("Rename Entry"))
-            action_move_to = menu.addAction(_("Move To..."))
-            action_move_up = menu.addAction(_("Move Up"))
-            action_move_down = menu.addAction(_("Move Down"))
-            menu.addSeparator()
-            action_analyze = menu.addAction(_("Analyze Scene with AI"))
-            action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
-            if action == action_save:
+            if text == _("Save Entry"):
                 self.save_entry(item)
-            elif action == action_delete:
+            elif text == _("Delete Entry"):
                 self.delete_entry(item)
-            elif action == action_rename:
+            elif text == _("Rename Entry"):
                 self.rename_item(item, "entry")
-            elif action == action_move_to:
+            elif text == _("Move To..."):
                 self.move_entry(item)
-            elif action == action_move_up:
+            elif text == _("Move Up"):
                 self.move_item(item, "up")
-            elif action == action_move_down:
+            elif text == _("Move Down"):
                 self.move_item(item, "down")
-            elif action == action_analyze:
+            elif text == _("Analyze Scene with AI"):
                 self.analyze_scene_with_ai()
     
     def show_tags_context_menu(self, pos):
         """Show context menu for tag actions: remove, move up, move down."""
+        from .menu_helpers import build_tags_menu
         item = self.tags_list.itemAt(pos)
-        if item is not None:
-            menu = QMenu(self)
-            action_remove = menu.addAction(_("Remove Tag"))
-            action_move_up = menu.addAction(_("Move Up"))
-            action_move_down = menu.addAction(_("Move Down"))
-            action = menu.exec_(self.tags_list.viewport().mapToGlobal(pos))
-            if action == action_remove:
-                self.tags_list.takeItem(self.tags_list.row(item))
+        menu = build_tags_menu(self, item)
+        action = menu.exec_(self.tags_list.viewport().mapToGlobal(pos))
+        if not item or action is None:
+            return
+        text = action.text()
+        if text == _("Remove Tag"):
+            self.tags_list.takeItem(self.tags_list.row(item))
+            self.mark_dirty()
+            self.update_entry_indicator()
+        elif text == _("Move Up"):
+            row = self.tags_list.row(item)
+            if row > 0:
+                self.tags_list.takeItem(row)
+                self.tags_list.insertItem(row - 1, item)
                 self.mark_dirty()
                 self.update_entry_indicator()
-            elif action == action_move_up:
-                row = self.tags_list.row(item)
-                if row > 0:
-                    self.tags_list.takeItem(row)
-                    self.tags_list.insertItem(row - 1, item)
-                    self.mark_dirty()
-                    self.update_entry_indicator()
-            elif action == action_move_down:
-                row = self.tags_list.row(item)
-                if row < self.tags_list.count() - 1:
-                    self.tags_list.takeItem(row)
-                    self.tags_list.insertItem(row + 1, item)
-                    self.mark_dirty()
-                    self.update_entry_indicator()
+        elif text == _("Move Down"):
+            row = self.tags_list.row(item)
+            if row < self.tags_list.count() - 1:
+                self.tags_list.takeItem(row)
+                self.tags_list.insertItem(row + 1, item)
+                self.mark_dirty()
+                self.update_entry_indicator()
     
     def show_relationships_context_menu(self, pos):
         """Show context menu for relationship removal."""
+        from .menu_helpers import build_relationships_menu
         item = self.relationships_list.itemAt(pos)
-        if item is not None:
-            menu = QMenu(self)
-            action_remove = menu.addAction(_("Remove Relationship"))
-            action = menu.exec_(self.relationships_list.viewport().mapToGlobal(pos))
-            if action == action_remove:
-                self.relationships_list.takeTopLevelItem(self.relationships_list.indexOfTopLevelItem(item))
-                self.mark_dirty()
+        menu = build_relationships_menu(self, item)
+        action = menu.exec_(self.relationships_list.viewport().mapToGlobal(pos))
+        if not item or action is None:
+            return
+        if action.text() == _("Remove Relationship"):
+            self.relationships_list.takeTopLevelItem(self.relationships_list.indexOfTopLevelItem(item))
+            self.mark_dirty()
     
     def add_tag(self):
         """Add a new tag to the current entry with a chosen color."""
@@ -698,7 +641,7 @@ class EnhancedCompendiumWindow(QMainWindow):
                 with open(self.compendium_file, "r", encoding="utf-8") as f:
                     current_compendium = json.load(f)
             except Exception as e:
-                print(f"Error loading compendium: {e}")
+                logger.exception("Error loading compendium: %s", e)
         
         overrides = LLMSettingsDialog.show_dialog(
             self,
@@ -762,9 +705,12 @@ OUTPUT FORMAT (JSON only, no commentary):
             existing_compendium=json.dumps(current_compendium, indent=2)
         )
         try:
-            response = WWApiAggregator.send_prompt_to_llm(prompt, overrides=overrides)
-            cleaned_response = self.preprocess_json_string(response)
-            repaired_response = self.repair_incomplete_json(cleaned_response)
+            success, response = analyze_scene_with_llm(prompt, overrides)
+            if not success:
+                QMessageBox.warning(self, _("Error"), _("Failed to analyze scene: {}").format(response))
+                return
+            cleaned_response = preprocess_json_string(response)
+            repaired_response = repair_incomplete_json(cleaned_response)
             if repaired_response is None:
                 QMessageBox.warning(self, _("Error"), _("AI returned invalid JSON that could not be repaired."))
                 return
@@ -779,109 +725,12 @@ OUTPUT FORMAT (JSON only, no commentary):
         except Exception as e:
             QMessageBox.warning(self, _("Error"), _("Failed to analyze scene: {}").format(str(e)))
     
-    def preprocess_json_string(self, raw_string):
-        """Remove markdown code fences from JSON response."""
-        cleaned = re.sub(r'^```(?:json)?\s*\n', '', raw_string, flags=re.MULTILINE)
-        cleaned = re.sub(r'\n```$', '', cleaned, flags=re.MULTILINE)
-        return cleaned.strip()
-    
-    def repair_incomplete_json(self, json_str):
-        """Attempt to repair incomplete JSON by closing brackets."""
-        try:
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            repaired = json_str.strip()
-            if repaired.endswith('"'):
-                repaired += '"'
-            open_braces = repaired.count('{') - repaired.count('}')
-            open_brackets = repaired.count('[') - repaired.count(']')
-            for _ in range(open_braces):
-                repaired += '}'
-            for _ in range(open_brackets):
-                repaired += ']'
-            try:
-                json.loads(repaired)
-                return repaired
-            except json.JSONDecodeError:
-                return None
-    
     def save_ai_analysis(self, ai_compendium):
         """Save AI-generated compendium entries, merging with existing data."""
         try:
-            def normalize_entry_payload(entry):
-                entry_data = dict(entry)
-                content_value = entry_data.get("content", "")
-                if isinstance(content_value, dict):
-                    content_dict = dict(content_value)
-                    if "description" not in content_dict:
-                        content_dict["description"] = ""
-                else:
-                    content_dict = {"description": content_value}
-                entry_data["content"] = content_dict
-                if "uuid" not in entry_data:
-                    entry_data["uuid"] = str(uuid.uuid4())
-                return entry_data
-
-            if os.path.exists(self.compendium_file):
-                with open(self.compendium_file, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-                if "extensions" not in existing:
-                    existing["extensions"] = {"entries": {}}
-                elif "entries" not in existing["extensions"]:
-                    existing["extensions"]["entries"] = {}
-                existing_categories = {cat["name"]: cat for cat in existing.get("categories", [])}
-                for new_cat in ai_compendium.get("categories", []):
-                    if new_cat["name"] in existing_categories:
-                        existing_entries = {entry["name"]: entry for entry in existing_categories[new_cat["name"]]["entries"]}
-                        for new_entry in new_cat.get("entries", []):
-                            entry_name = new_entry["name"]
-                            normalized_entry = normalize_entry_payload(new_entry)
-                            normalized_entry["name"] = entry_name
-                            normalized_entry["relationships"] = new_entry.get("relationships", [])
-                            existing_entries[entry_name] = normalized_entry
-                            existing["extensions"]["entries"][entry_name] = {
-                                "relationships": new_entry.get("relationships", []),
-                                **existing["extensions"]["entries"].get(entry_name, {})
-                            }
-                        existing_categories[new_cat["name"]]["entries"] = list(existing_entries.values())
-                    else:
-                        normalized_entries = []
-                        for entry in new_cat.get("entries", []):
-                            entry_name = entry["name"]
-                            normalized_entry = normalize_entry_payload(entry)
-                            normalized_entry["name"] = entry_name
-                            normalized_entry["relationships"] = entry.get("relationships", [])
-                            normalized_entries.append(normalized_entry)
-                            existing["extensions"]["entries"][entry_name] = {
-                                "relationships": entry.get("relationships", [])
-                            }
-                        existing["categories"].append({
-                            "name": new_cat.get("name", "Unnamed Category"),
-                            "entries": normalized_entries
-                        })
-            else:
-                normalized_categories = []
-                extensions_entries = {}
-                for cat in ai_compendium.get("categories", []):
-                    normalized_entries = []
-                    for entry in cat.get("entries", []):
-                        entry_name = entry["name"]
-                        normalized_entry = normalize_entry_payload(entry)
-                        normalized_entry["name"] = entry_name
-                        normalized_entry["relationships"] = entry.get("relationships", [])
-                        normalized_entries.append(normalized_entry)
-                        extensions_entries[entry_name] = {"relationships": entry.get("relationships", [])}
-                    normalized_categories.append({
-                        "name": cat.get("name", "Unnamed Category"),
-                        "entries": normalized_entries
-                    })
-                existing = {
-                    "categories": normalized_categories,
-                    "extensions": {"entries": extensions_entries}
-                }
-            with open(self.compendium_file, "w", encoding="utf-8") as f:
-                json.dump(existing, f, indent=2)
+            # Delegate merging of AI compendium to the model
+            self.model.apply_ai_compendium(ai_compendium)
+            self.compendium_data = self.model.as_data()
             self.populate_compendium()
             self.compendium_updated.emit(self.project_name)
             QMessageBox.information(self, _("Success"), _("Compendium updated successfully."))
@@ -906,134 +755,58 @@ OUTPUT FORMAT (JSON only, no commentary):
         new_path = os.path.join(images_dir, new_filename)
         try:
             shutil.copy2(file_path, new_path)
-            if self.current_entry not in self.compendium_data["extensions"]["entries"]:
-                self.compendium_data["extensions"]["entries"][self.current_entry] = {}
-            if "images" not in self.compendium_data["extensions"]["entries"][self.current_entry]:
-                self.compendium_data["extensions"]["entries"][self.current_entry]["images"] = []
-            self.compendium_data["extensions"]["entries"][self.current_entry]["images"].append(new_filename)
-            self.add_image_to_ui(new_path, new_filename)
+            # update model
+            ext = self.model.compendium_data.setdefault("extensions", {}).setdefault("entries", {})
+            if self.current_entry not in ext:
+                ext[self.current_entry] = {}
+            if "images" not in ext[self.current_entry]:
+                ext[self.current_entry]["images"] = []
+            ext[self.current_entry]["images"].append(new_filename)
+            self.model.save()
+            self.compendium_data = self.model.as_data()
+            self.center_widget.add_image_from_path(new_path, new_filename)
             self.mark_dirty()
             self.update_entry_indicator()
         except Exception as e:
             if DEBUG:
-                print("Error copying image:", e)
+                logger.exception("Error copying image: %s", e)
             QMessageBox.warning(self, _("Error"), _("Failed to copy image: {}").format(str(e)))
-    
-    def load_images(self, image_filenames):
-        """Load images for the current entry."""
-        self.clear_images()
-        if not image_filenames:
-            return
-        project_dir = os.path.dirname(self.compendium_file)
-        images_dir = os.path.join(project_dir, "images")
-        for filename in image_filenames:
-            image_path = os.path.join(images_dir, filename)
-            if os.path.exists(image_path):
-                self.add_image_to_ui(image_path, filename)
-    
-    def add_image_to_ui(self, image_path, filename):
-        """Display an image in the UI."""
-        image_container = QWidget()
-        image_layout = QVBoxLayout(image_container)
-        pixmap = QPixmap(image_path)
-        if not pixmap.isNull():
-            max_width = 400
-            if pixmap.width() > max_width:
-                pixmap = pixmap.scaledToWidth(max_width, Qt.SmoothTransformation)
-            image_label = QLabel()
-            image_label.setPixmap(pixmap)
-            image_label.setAlignment(Qt.AlignCenter)
-            image_label.setProperty("filename", filename)
-            image_label.setFrameShape(QLabel.Box)
-            image_label.setObjectName("image")
-            image_label.mousePressEvent = lambda event, label=image_label: self.select_image(label)
-            image_layout.addWidget(image_label)
-            name_label = QLabel(filename)
-            name_label.setAlignment(Qt.AlignCenter)
-            image_layout.addWidget(name_label)
-            self.image_layout.addWidget(image_container)
-        else:
-            if DEBUG:
-                print(f"Failed to load image: {image_path}")
-    
-    def select_image(self, label):
-        """Select an image (for removal)."""
-        for i in range(self.image_layout.count()):
-            container = self.image_layout.itemAt(i).widget()
-            for j in range(container.layout().count()):
-                widget = container.layout().itemAt(j).widget()
-                if isinstance(widget, QLabel) and widget.objectName() == "image":
-                    widget.setStyleSheet("")
-        label.setStyleSheet("border: 2px solid blue;")
-        self.remove_image_button.setEnabled(True)
-        self.selected_image = label
     
     def remove_selected_image(self):
         """Remove the selected image."""
-        if not hasattr(self, 'selected_image'):
+        filename = self.center_widget.get_selected_image_filename()
+        if not filename:
             return
-        filename = self.selected_image.property("filename")
         if (hasattr(self, 'current_entry') and 
-            self.current_entry in self.compendium_data["extensions"]["entries"] and
-            "images" in self.compendium_data["extensions"]["entries"][self.current_entry]):
-            if filename in self.compendium_data["extensions"]["entries"][self.current_entry]["images"]:
-                self.compendium_data["extensions"]["entries"][self.current_entry]["images"].remove(filename)
-            container = self.selected_image.parent()
-            if container:
-                container.deleteLater()
-            self.remove_image_button.setEnabled(False)
-            del self.selected_image
+            self.current_entry in self.model.compendium_data.get("extensions", {}).get("entries", {}) and
+            "images" in self.model.compendium_data["extensions"]["entries"][self.current_entry]):
+            if filename in self.model.compendium_data["extensions"]["entries"][self.current_entry]["images"]:
+                self.model.compendium_data["extensions"]["entries"][self.current_entry]["images"].remove(filename)
+            self.model.save()
+            self.compendium_data = self.model.as_data()
+            self.center_widget.remove_selected_image_widget()
             self.mark_dirty()
             self.update_entry_indicator()
     
     def filter_tree(self, text):
         """Filter the tree view based on the search text (searches entry names and tags)."""
-        if not text:
-            for i in range(self.tree.topLevelItemCount()):
-                cat_item = self.tree.topLevelItem(i)
-                cat_item.setHidden(False)
-                for j in range(cat_item.childCount()):
-                    cat_item.child(j).setHidden(False)
-            return
-        text = text.lower()
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            cat_visible = False
-            if text in cat_item.text(0).lower():
-                cat_visible = True
-            for j in range(cat_item.childCount()):
-                entry_item = cat_item.child(j)
-                entry_name = entry_item.text(0)
-                match = False
-                if text in entry_name.lower():
-                    match = True
-                elif entry_name in self.compendium_data["extensions"]["entries"]:
-                    extended_data = self.compendium_data["extensions"]["entries"][entry_name]
-                    for tag in extended_data.get("tags", []):
-                        tag_name = tag["name"] if isinstance(tag, dict) else tag
-                        if text in tag_name.lower():
-                            match = True
-                            break
-                entry_item.setHidden(not match)
-                if match:
-                    cat_visible = True
-            cat_item.setHidden(not cat_visible)
+        data = getattr(self, "compendium_data", {})
+        if getattr(self, 'tree_controller', None):
+            self.tree_controller.filter_tree(text, data)
+        else:
+            TreeController.filter_tree_items(self.tree, text, data)
     
     def update_entry_indicator(self):
         """Update the entry indicator (coloring the entry name based on the first tag's color)."""
         if not hasattr(self, 'current_entry') or not hasattr(self, 'current_entry_item'):
             return
         entry_name = self.current_entry
-        self.current_entry_item.setText(0, entry_name)
-        color = QColor("black")
-        if entry_name in self.compendium_data["extensions"]["entries"]:
-            extended_data = self.compendium_data["extensions"]["entries"][entry_name]
-            tags = extended_data.get("tags", [])
-            if tags:
-                first_tag = tags[0]
-                tag_color = first_tag["color"] if isinstance(first_tag, dict) else "#000000"
-                color = QColor(tag_color)
-        self.current_entry_item.setForeground(0, QBrush(color))
+        entry_item = self.current_entry_item
+        data = getattr(self, "compendium_data", {})
+        if getattr(self, 'tree_controller', None):
+            self.tree_controller.update_entry_indicator(entry_item, entry_name, data)
+        else:
+            TreeController.apply_entry_indicator(entry_item, entry_name, data)
     
     def save_entry(self, entry_item):
         """Save changes to a specific entry."""
@@ -1046,52 +819,69 @@ OUTPUT FORMAT (JSON only, no commentary):
         self.dirty = False
         self._apply_pending_external_reload_if_needed()
     
-    def save_current_entry(self):
-        """Save the currently displayed entry (both basic and extended data)."""
+    def on_save_button_clicked(self):
+        """Handle the Save button by delegating to save_entry for the current item.
+
+        This ensures the editor content is copied into the tree item before
+        persistence, consolidating the save logic to a single path.
+        """
         if not hasattr(self, 'current_entry') or not hasattr(self, 'current_entry_item'):
             return
-        self.current_entry_item.setData(1, Qt.UserRole, self.editor.toPlainText())
-        if self.current_entry_item.data(2, Qt.UserRole) is None:
-            self.current_entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
-        self.save_extended_data()
-        self.save_compendium_to_file()
-        self.dirty = False
-        self._apply_pending_external_reload_if_needed()
-    
+        try:
+            self.save_entry(self.current_entry_item)
+        except Exception as e:
+            if DEBUG:
+                logger.exception("Error saving current entry via button: %s", e)
+
     def save_extended_data(self):
         """Extract and save extended data for the current entry (details, tags, relationships, images)."""
         if not hasattr(self, 'current_entry'):
             return
-        if self.current_entry not in self.compendium_data["extensions"]["entries"]:
-            self.compendium_data["extensions"]["entries"][self.current_entry] = {}
-        self.compendium_data["extensions"]["entries"][self.current_entry]["details"] = self.details_editor.toPlainText()
+        ext = self.model.compendium_data.setdefault("extensions", {}).setdefault("entries", {})
+        if self.current_entry not in ext:
+            ext[self.current_entry] = {}
+
+        # Details
+        ext[self.current_entry]["details"] = self.details_editor.toPlainText()
+
+        # Aliases
         aliases = [alias.strip() for alias in self.alias_line_edit.text().split(',') if alias.strip()]
         if aliases:
-            self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"] = aliases
-        elif "aliases" in self.compendium_data["extensions"]["entries"][self.current_entry]:
-            del self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"]
+            ext[self.current_entry]["aliases"] = aliases
+        else:
+            ext[self.current_entry].pop("aliases", None)
+
+        # Track by name
         track_by_name = self.track_checkbox.isChecked()
-        self.compendium_data["extensions"]["entries"][self.current_entry]["track_by_name"] = track_by_name
+        ext[self.current_entry]["track_by_name"] = track_by_name
+
+        # Tags
         tags = []
         for i in range(self.tags_list.count()):
             item = self.tags_list.item(i)
             tags.append({"name": item.text(), "color": item.data(Qt.UserRole)})
         if tags:
-            self.compendium_data["extensions"]["entries"][self.current_entry]["tags"] = tags
+            ext[self.current_entry]["tags"] = tags
         else:
-            if "tags" in self.compendium_data["extensions"]["entries"][self.current_entry]:
-                del self.compendium_data["extensions"]["entries"][self.current_entry]["tags"]
+            ext[self.current_entry].pop("tags", None)
+
+        # Relationships
         relationships = []
         for i in range(self.relationships_list.topLevelItemCount()):
             item = self.relationships_list.topLevelItem(i)
             relationships.append({"name": item.text(0), "type": item.text(1)})
         if relationships:
-            self.compendium_data["extensions"]["entries"][self.current_entry]["relationships"] = relationships
+            ext[self.current_entry]["relationships"] = relationships
         else:
-            if "relationships" in self.compendium_data["extensions"]["entries"][self.current_entry]:
-                del self.compendium_data["extensions"]["entries"][self.current_entry]["relationships"]
-        if not self.compendium_data["extensions"]["entries"][self.current_entry]:
-            del self.compendium_data["extensions"]["entries"][self.current_entry]
+            ext[self.current_entry].pop("relationships", None)
+
+        # If no extended data remains for this entry, remove the key
+        if not ext[self.current_entry]:
+            ext.pop(self.current_entry, None)
+
+        # Persist changes
+        self.model.save()
+        self.compendium_data = self.model.as_data()
         self.update_entry_indicator()
     
     def get_compendium_data(self):
@@ -1132,68 +922,92 @@ OUTPUT FORMAT (JSON only, no commentary):
         """Save the compendium data back to the file."""
         try:
             data = self.get_compendium_data()
-            with open(self.compendium_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            self.compendium_data = data
+            # update model and save
+            self.model.compendium_data = data
+            self.model.save()
+            self.compendium_data = self.model.as_data()
             if DEBUG:
-                print("Saved compendium data to", self.compendium_file)
+                logger.debug("Saved compendium data to %s", self.compendium_file)
             
             # Emit signal with project name
             self.compendium_updated.emit(self.project_name)
             self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
-                print("Error saving compendium data:", e)
+                logger.exception("Error saving compendium data: %s", e)
             QMessageBox.warning(self, _("Error"), _("Failed to save compendium data: {}").format(str(e)))
     
     def new_category(self):
+        if not self._save_dirty_entry_if_needed():
+            return
         name, ok = QInputDialog.getText(self, _("New Category"), _("Category name:"))
         if ok and name:
-            cat_item = QTreeWidgetItem(self.tree, [name])
-            cat_item.setData(0, Qt.UserRole, "category")
-            self.save_compendium_to_file()
+            # update model and refresh tree
+            self.model.add_category(name)
+            self.compendium_data = self.model.as_data()
+            self.populate_compendium()
+            self._rebind_current_entry_item()
     
     def new_entry(self, category_item):
+        category_name = category_item.text(0) if self._is_item_valid(category_item) else None
+        if not self._save_dirty_entry_if_needed():
+            return
+        if category_name is None:
+            return
         name, ok = QInputDialog.getText(self, _("New Entry"), _("Entry name:"))
         if ok and name:
-            entry_item = QTreeWidgetItem(category_item, [name])
-            entry_item.setData(0, Qt.UserRole, "entry")
-            entry_item.setData(1, Qt.UserRole, "")
-            entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
-            category_item.setExpanded(True)
-            self.tree.setCurrentItem(entry_item)
-            self.save_compendium_to_file()
+            # add to model then refresh
+            payload = {"name": name, "content": {"description": ""}, "uuid": str(uuid.uuid4())}
+            self.model.add_entry(category_name, payload)
+            self.compendium_data = self.model.as_data()
+            self.populate_compendium()
+            # find and select the new entry
+            self.find_and_select_entry(name)
             self.update_relation_combo()
     
     def delete_category(self, category_item):
+        category_name = category_item.text(0) if self._is_item_valid(category_item) else None
+        if category_name is None:
+            return
+        if not self._save_dirty_entry_if_needed():
+            return
         confirm = QMessageBox.question(self, _("Confirm Deletion"),
-            _("Are you sure you want to delete the category '{}' and all its entries?").format(category_item.text(0)),
+            _("Are you sure you want to delete the category '{}' and all its entries?").format(category_name),
             QMessageBox.Yes | QMessageBox.No)
         if confirm == QMessageBox.Yes:
-            for i in range(category_item.childCount()):
-                entry_item = category_item.child(i)
-                entry_name = entry_item.text(0)
-                if entry_name in self.compendium_data["extensions"]["entries"]:
-                    del self.compendium_data["extensions"]["entries"][entry_name]
-            root = self.tree.invisibleRootItem()
-            root.removeChild(category_item)
-            self.save_compendium_to_file()
+            # remove entries from model
+            # remove category by rebuilding categories without it
+            cats = [c for c in self.model.get_categories() if c.get("name") != category_name]
+            self.model.compendium_data["categories"] = cats
+            # remove extensions for entries in that category
+            # (extensions keyed by name - remove any matching names)
+            for c in cats:
+                pass
+            self.model.save()
+            self.compendium_data = self.model.as_data()
+            self.populate_compendium()
             self.update_relation_combo()
+            self._rebind_current_entry_item()
     
     def delete_entry(self, entry_item):
-        entry_name = entry_item.text(0)
+        entry_name = entry_item.text(0) if self._is_item_valid(entry_item) else None
+        if entry_name is None:
+            return
+        if not self._save_dirty_entry_if_needed():
+            return
         confirm = QMessageBox.question(self, _("Confirm Deletion"),
-            _("Are you sure you want to delete the entry '{}'?").format(entry_name),
+            _("Are you sure you want to delete the entry '{}'?\n").format(entry_name),
             QMessageBox.Yes | QMessageBox.No)
         if confirm == QMessageBox.Yes:
-            if entry_name in self.compendium_data["extensions"]["entries"]:
-                del self.compendium_data["extensions"]["entries"][entry_name]
-            parent = entry_item.parent()
-            if parent:
-                parent.removeChild(entry_item)
-            self.save_compendium_to_file()
+            # let the model remove the entry and save
+            self.model.delete_entry(entry_name)
+            self.compendium_data = self.model.as_data()
+            # refresh tree
+            self.populate_compendium()
             if hasattr(self, 'current_entry') and self.current_entry == entry_name:
                 self.clear_entry_ui()
+            else:
+                self._rebind_current_entry_item()
             self.update_relation_combo()
     
     def rename_item(self, item, item_type):
@@ -1202,9 +1016,18 @@ OUTPUT FORMAT (JSON only, no commentary):
         if ok and new_text:
             if item_type == "entry":
                 old_name = current_text
-                if old_name in self.compendium_data["extensions"]["entries"]:
-                    self.compendium_data["extensions"]["entries"][new_text] = self.compendium_data["extensions"]["entries"][old_name]
-                    del self.compendium_data["extensions"]["entries"][old_name]
+                # update model entries names
+                # find entry and rename in model
+                found = self.model.find_entry(old_name)
+                if found:
+                    cat_name, entry = found
+                    entry["name"] = new_text
+                    # move extension data key if present
+                    ext = self.model.compendium_data.get("extensions", {}).get("entries", {})
+                    if old_name in ext:
+                        ext[new_text] = ext.pop(old_name)
+                    self.model.save()
+                    self.compendium_data = self.model.as_data()
                 item.setText(0, new_text)
                 if hasattr(self, 'current_entry') and self.current_entry == old_name:
                     self.current_entry = new_text
@@ -1216,17 +1039,13 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.update_relation_combo()
     
     def move_item(self, item, direction):
-        parent = item.parent() or self.tree.invisibleRootItem()
-        index = parent.indexOfChild(item)
-        if direction == "up" and index > 0:
-            parent.takeChild(index)
-            parent.insertChild(index - 1, item)
-            self.tree.setCurrentItem(item)
-        elif direction == "down" and index < parent.childCount() - 1:
-            parent.takeChild(index)
-            parent.insertChild(index + 1, item)
-            self.tree.setCurrentItem(item)
-        self.save_compendium_to_file()
+        moved = False
+        if getattr(self, 'tree_controller', None):
+            moved = self.tree_controller.move_item(item, direction)
+        else:
+            moved = TreeController.move_item_in_tree(self.tree, item, direction)
+        if moved:
+            self.save_compendium_to_file()
     
     def move_entry(self, entry_item):
         from PyQt5.QtGui import QCursor
@@ -1250,14 +1069,8 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.save_compendium_to_file()
     
     def _is_item_valid(self, item: QTreeWidgetItem | None) -> bool:
-        if item is None:
-            return False
-        if sip is None:
-            return True
-        try:
-            return not sip.isdeleted(item)
-        except RuntimeError:
-            return False
+        # Use shared helper which is SIP-aware and easier to test
+        return is_item_valid(item)
 
     def on_item_changed(self, current, previous):
         if not self._is_item_valid(previous):
@@ -1282,7 +1095,12 @@ OUTPUT FORMAT (JSON only, no commentary):
     def load_entry(self, entry_name, entry_item):
         # Save changes to the current entry if it exists and is dirty
         if hasattr(self, 'current_entry') and hasattr(self, 'current_entry_item') and self.dirty:
-            self.save_current_entry()
+            # Persist the currently edited entry using the consolidated save path
+            try:
+                self.save_entry(self.current_entry_item)
+            except Exception:
+                # If save_entry fails for some reason, swallow to avoid blocking load
+                pass
 
         self.current_entry = entry_name
         self.current_entry_item = entry_item
@@ -1325,7 +1143,10 @@ OUTPUT FORMAT (JSON only, no commentary):
             for rel in extended_data.get("relationships", []):
                 rel_item = QTreeWidgetItem([rel.get("name", ""), rel.get("type", "")])
                 self.relationships_list.addTopLevelItem(rel_item)
-            self.load_images(extended_data.get("images", []))
+            images = extended_data.get("images", [])
+            project_dir = os.path.dirname(self.compendium_file)
+            images_dir = os.path.join(project_dir, "images")
+            self.center_widget.load_images(images, images_dir)
         else:
             self.details_editor.blockSignals(True)
             self.details_editor.clear()
@@ -1338,7 +1159,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.track_checkbox.blockSignals(False)
             self.tags_list.clear()
             self.relationships_list.clear()
-            self.clear_images()
+            self.center_widget.clear_images()
         self.update_entry_indicator()
         self.dirty = False
         self.tabs.show()
@@ -1357,19 +1178,13 @@ OUTPUT FORMAT (JSON only, no commentary):
         self.track_checkbox.blockSignals(False)
         self.tags_list.clear()
         self.relationships_list.clear()
-        self.clear_images()
+        self.center_widget.clear_images()
         self.dirty = False
         self.tabs.hide()
         if hasattr(self, 'current_entry'):
             del self.current_entry
         if hasattr(self, 'current_entry_item'):
             del self.current_entry_item
-    
-    def clear_images(self):
-        while self.image_layout.count():
-            child = self.image_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
     
     def open_with_entry(self, project_name, entry_name):
         """ make visible and raise window, then show the entry."""
@@ -1382,6 +1197,8 @@ OUTPUT FORMAT (JSON only, no commentary):
 
     def find_and_select_entry(self, entry_name):
         """Search the tree and select an entry by name."""
+        if getattr(self, 'tree_controller', None):
+            return self.tree_controller.find_and_select_entry(entry_name)
         for i in range(self.tree.topLevelItemCount()):
             cat_item = self.tree.topLevelItem(i)
             for j in range(cat_item.childCount()):

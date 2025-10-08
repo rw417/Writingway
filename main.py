@@ -76,6 +76,16 @@ def on_theme_changed(theme_name):
     pass
 
 def main():
+    # Enable faulthandler to capture native crashes
+    try:
+        import faulthandler, signal
+        faulthandler.enable(all_threads=True)
+        try:
+            faulthandler.register(signal.SIGSEGV, file=open('segfault_trace.txt', 'w'), all_threads=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     install_cursor_manager(app)
     writingway_preload_settings(app)
