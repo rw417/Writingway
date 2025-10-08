@@ -6,14 +6,14 @@ REM ===========================================
 REM Check if the virtual environment folder exists.
 IF NOT EXIST "venv" (
     echo Creating virtual environment...
-    py -3.11 -m venv venv
+    conda create -n writingway
 ) ELSE (
     echo Virtual environment already exists.
 )
 
 REM Activate the virtual environment.
 echo Activating virtual environment...
-call venv\Scripts\activate
+conda activate writingway
 
 REM Upgrade pip.
 echo Upgrading pip...

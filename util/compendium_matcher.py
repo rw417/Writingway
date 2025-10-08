@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - sip may not be available in headless t
     sip = None  # type: ignore[assignment]
 
 from compendium.compendium_manager import CompendiumManager
+from util.cursor_manager import set_dynamic_clickable
 
 
 @dataclass(frozen=True)
@@ -330,10 +331,15 @@ class MatchClickController(QObject):
         self._pressed_match_start: Optional[int] = None
         self._pressed_match_length: Optional[int] = None
         self._pressed_match_entry: Optional[Dict] = None
+        self._hover_clickable: bool = False
 
         viewport = getattr(self._widget, "viewport", lambda: self._widget)()
         viewport.installEventFilter(self)
         self._viewport = viewport
+        if hasattr(viewport, "setAttribute"):
+            viewport.setAttribute(Qt.WA_Hover, True)
+        if hasattr(viewport, "setMouseTracking"):
+            viewport.setMouseTracking(True)
         self._widget.destroyed.connect(self._on_widget_destroyed)
         self._registry.matches_changed.connect(self._on_matches_changed)
 
@@ -341,6 +347,7 @@ class MatchClickController(QObject):
         self._close_popup()
         if hasattr(self, "_viewport") and self._viewport:
             self._viewport.removeEventFilter(self)
+            set_dynamic_clickable(self._viewport, False)
         try:
             self._registry.matches_changed.disconnect(self._on_matches_changed)
         except (TypeError, RuntimeError):
@@ -353,7 +360,8 @@ class MatchClickController(QObject):
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         if obj is self._viewport:
-            if event.type() == QEvent.MouseButtonPress:
+            etype = event.type()
+            if etype == QEvent.MouseButtonPress:
                 button = getattr(event, "button", lambda: None)()
                 if button == Qt.LeftButton:
                     self._capture_pressed_match(event.pos())
@@ -363,8 +371,12 @@ class MatchClickController(QObject):
                     global_pos = self._viewport.mapToGlobal(getattr(event, "pos", lambda: QPoint())())
                     if not self._popup.geometry().contains(global_pos):
                         self._close_popup(reset_pressed=False)
-            elif event.type() == QEvent.MouseButtonRelease and getattr(event, "button", lambda: None)() == Qt.LeftButton:
+            elif etype == QEvent.MouseButtonRelease and getattr(event, "button", lambda: None)() == Qt.LeftButton:
                 self._handle_click(event.pos())
+            elif etype in (QEvent.HoverEnter, QEvent.HoverMove, QEvent.MouseMove):
+                self._update_hover_clickable(getattr(event, "pos", lambda: QPoint())())
+            elif etype == QEvent.HoverLeave:
+                self._update_hover_clickable(None)
         elif obj is self._app and self._popup:
             if event.type() == QEvent.MouseButtonPress:
                 target_widget = getattr(event, "widget", lambda: None)()
@@ -490,6 +502,7 @@ class MatchClickController(QObject):
             self._global_filter_active = False
         if reset_pressed:
             self._reset_pressed_match()
+        self._update_hover_clickable(None)
 
     def _on_matches_changed(self, document_id: str) -> None:
         if document_id != self._document_id:
@@ -500,6 +513,7 @@ class MatchClickController(QObject):
             self._registry.matches_changed.disconnect(self._on_matches_changed)
         except (TypeError, RuntimeError):
             pass
+        set_dynamic_clickable(self._viewport, False)
         self._close_popup()
 
     def _on_popup_destroyed(self) -> None:
@@ -508,6 +522,13 @@ class MatchClickController(QObject):
             with suppress(RuntimeError, TypeError):
                 self._app.removeEventFilter(self)
             self._global_filter_active = False
+        self._update_hover_clickable(None)
+
+    def _update_hover_clickable(self, pos: Optional[QPoint]) -> None:
+        is_clickable = bool(self._match_at_position(pos)) if pos is not None else False
+        if is_clickable != self._hover_clickable:
+            self._hover_clickable = is_clickable
+            set_dynamic_clickable(self._viewport, is_clickable)
 
 
 class CompendiumMatchService(QObject):

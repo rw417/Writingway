@@ -1,5 +1,6 @@
 import sys
 import logging
+from typing import TYPE_CHECKING
 from settings.translation_manager import TranslationManager
 from settings.settings_manager import WWSettingsManager
 
@@ -47,6 +48,10 @@ check_dependencies()
 from PyQt5.QtWidgets import QApplication
 from workbench import WorkbenchWindow
 from settings.theme_manager import ThemeManager
+from util.cursor_manager import install_cursor_manager
+
+if TYPE_CHECKING:
+    from gettext import gettext as _
 
 def writingway_preload_settings(app):
     theme = WWSettingsManager.get_appearance_settings()["theme"]
@@ -72,6 +77,7 @@ def on_theme_changed(theme_name):
 
 def main():
     app = QApplication(sys.argv)
+    install_cursor_manager(app)
     writingway_preload_settings(app)
     window = WorkbenchWindow(translation_manager)
     window.show()

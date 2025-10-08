@@ -6,14 +6,16 @@
 # Check if the virtual environment folder exists.
 if [ ! -d "venv" ]; then
   echo "Creating virtual environment..."
-  python -m venv venv
+  conda create -n writingway
+  # python -m venv venv
 else
   echo "Virtual environment already exists."
 fi
 
 # Activate the virtual environment.
 echo "Activating virtual environment..."
-source venv/bin/activate
+conda activate writingway
+# source venv/bin/activate
 
 # Upgrade pip.
 echo "Upgrading pip..."
