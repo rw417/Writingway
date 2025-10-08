@@ -59,6 +59,8 @@ class WorkshopWindow(QDialog):
         self.worker = None  # LLMWorker instance
         self.pending_user_message_id = None
         self.streaming_message_id = None
+        self.compendium_match_service = getattr(parent, "compendium_match_service", None)
+        self._chat_match_highlighter = None
 
         # Conversation management
         self.conversation_history = []
@@ -90,9 +92,21 @@ class WorkshopWindow(QDialog):
         self.load_conversations()
         self.read_settings()
 
+        if self.compendium_match_service and hasattr(self, "chat_input"):
+            doc_id = f"{self.project_name}:workshop_chat"
+            self._chat_match_highlighter = self.compendium_match_service.attach_highlighter(
+                self.chat_input.document(), doc_id
+            )
+
         # Connect model signal if available
         if self.model:
             self.model.structureChanged.connect(self.context_panel.on_structure_changed)
+
+    def closeEvent(self, event):
+        if self.compendium_match_service and self._chat_match_highlighter:
+            self.compendium_match_service.detach_highlighter(self._chat_match_highlighter)
+            self._chat_match_highlighter = None
+        super().closeEvent(event)
 
     def get_available_models(self):
         cache_dir = os.path.expanduser("~/.cache/whisper")

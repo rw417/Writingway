@@ -4,9 +4,9 @@ import re
 import shutil
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QToolBar, QSplitter, QTreeWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
+                             QLineEdit, QCheckBox, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
                              QScrollArea, QFormLayout, QGroupBox, QInputDialog, QMenu, QColorDialog, QSizePolicy, QListWidgetItem, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QSettings
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QFileSystemWatcher, QTimer
 from PyQt5.QtGui import QPixmap, QColor, QBrush, QFont
 import json
 import os
@@ -41,6 +41,14 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.project_name = project_name
         self.controller = parent
         self.project_window = parent  # For compatibility with AI analysis feature
+        self.file_watcher = QFileSystemWatcher(self)
+        self.file_watcher.fileChanged.connect(self._on_compendium_path_changed)
+        self.file_watcher.directoryChanged.connect(self._on_compendium_path_changed)
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(250)
+        self._reload_timer.timeout.connect(self._perform_compendium_reload)
+        self._pending_external_reload = False
 
         # Set up the central widget (which holds the main layout and splitter)
         self.central_widget = QWidget()
@@ -64,6 +72,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Set up the compendium file and populate the UI
         self.setup_compendium_file()
         self.populate_compendium()
+        self._reset_compendium_watchers()
         self.connect_signals()
 
         # Window title and size
@@ -177,6 +186,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.project_name = new_project
         self.setWindowTitle(_("Enhanced Compendium - {}").format(self.project_name))
         self.setup_compendium_file()
+        self._reset_compendium_watchers()
         self.populate_compendium()
 
     def setup_compendium_file(self):
@@ -187,6 +197,7 @@ class EnhancedCompendiumWindow(QMainWindow):
             os.makedirs(project_dir)
         if DEBUG:
             print("Loading compendium from:", self.compendium_file)
+        self._reset_compendium_watchers()
     
     def create_tree_view(self):
         """Create the left panel: a tree view (with a search bar) for categories and entries."""
@@ -216,6 +227,17 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.save_button = QPushButton(_("Save Changes"))
         header_layout.addWidget(self.save_button)
         center_layout.addWidget(self.header_widget)
+
+        # Entry metadata controls
+        self.metadata_widget = QWidget()
+        metadata_layout = QFormLayout(self.metadata_widget)
+        self.alias_line_edit = QLineEdit()
+        self.alias_line_edit.setPlaceholderText(_("Aliases (comma-separated)"))
+        metadata_layout.addRow(_("Aliases:"), self.alias_line_edit)
+        self.track_checkbox = QCheckBox(_("Track by name"))
+        self.track_checkbox.setChecked(True)
+        metadata_layout.addRow("", self.track_checkbox)
+        center_layout.addWidget(self.metadata_widget)
         
         # Tabs
         self.tabs = QTabWidget()
@@ -384,10 +406,61 @@ class EnhancedCompendiumWindow(QMainWindow):
                 cat_item.setExpanded(True)
             self.update_relation_combo()
             
+            self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
                 print("Error loading compendium data:", e)
             QMessageBox.warning(self, _("Error"), _("Failed to load compendium data: {}").format(str(e)))
+            self._reset_compendium_watchers()
+
+    def _reset_compendium_watchers(self):
+        if not hasattr(self, "file_watcher") or self.file_watcher is None:
+            return
+        watcher = self.file_watcher
+        # Remove existing paths to avoid duplicates when the file is rewritten
+        watcher.blockSignals(True)
+        for path in list(watcher.files()):
+            watcher.removePath(path)
+        for path in list(watcher.directories()):
+            watcher.removePath(path)
+        watcher.blockSignals(False)
+
+        if getattr(self, "compendium_file", None):
+            compendium_dir = os.path.dirname(self.compendium_file)
+            if os.path.isdir(compendium_dir):
+                watcher.addPath(compendium_dir)
+            if os.path.exists(self.compendium_file):
+                watcher.addPath(self.compendium_file)
+
+    def _on_compendium_path_changed(self, _path):
+        if DEBUG:
+            print("Compendium file change detected; scheduling reload")
+        self._reset_compendium_watchers()
+        if self.dirty:
+            self._pending_external_reload = True
+            return
+        self._reload_timer.start()
+
+    def _perform_compendium_reload(self):
+        if self.dirty:
+            self._pending_external_reload = True
+            return
+        if self._reload_timer.isActive():
+            self._reload_timer.stop()
+        self._pending_external_reload = False
+        current_entry = getattr(self, "current_entry", None)
+        self.populate_compendium()
+        if current_entry:
+            self.find_and_select_entry(current_entry)
+        else:
+            self.select_first_entry()
+        self.compendium_updated.emit(self.project_name)
+
+    def _apply_pending_external_reload_if_needed(self):
+        if getattr(self, "_pending_external_reload", False) and not self.dirty:
+            if self._reload_timer.isActive():
+                self._reload_timer.stop()
+            self._perform_compendium_reload()
     
     def update_relation_combo(self):
         """Populate the relationship combo box with available entries."""
@@ -409,6 +482,8 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.tag_input.returnPressed.connect(self.add_tag)
         self.editor.textChanged.connect(self.mark_dirty)
         self.details_editor.textChanged.connect(lambda: self.mark_dirty())
+        self.alias_line_edit.textChanged.connect(self.mark_dirty)
+        self.track_checkbox.toggled.connect(self.mark_dirty)
         self.tags_list.customContextMenuRequested.connect(self.show_tags_context_menu)
         self.add_rel_button.clicked.connect(self.add_relationship)
         self.relationships_list.customContextMenuRequested.connect(self.show_relationships_context_menu)
@@ -889,6 +964,7 @@ OUTPUT FORMAT (JSON only, no commentary):
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
+        self._apply_pending_external_reload_if_needed()
     
     def save_current_entry(self):
         """Save the currently displayed entry (both basic and extended data)."""
@@ -898,6 +974,7 @@ OUTPUT FORMAT (JSON only, no commentary):
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
+        self._apply_pending_external_reload_if_needed()
     
     def save_extended_data(self):
         """Extract and save extended data for the current entry (details, tags, relationships, images)."""
@@ -906,6 +983,13 @@ OUTPUT FORMAT (JSON only, no commentary):
         if self.current_entry not in self.compendium_data["extensions"]["entries"]:
             self.compendium_data["extensions"]["entries"][self.current_entry] = {}
         self.compendium_data["extensions"]["entries"][self.current_entry]["details"] = self.details_editor.toPlainText()
+        aliases = [alias.strip() for alias in self.alias_line_edit.text().split(',') if alias.strip()]
+        if aliases:
+            self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"] = aliases
+        elif "aliases" in self.compendium_data["extensions"]["entries"][self.current_entry]:
+            del self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"]
+        track_by_name = self.track_checkbox.isChecked()
+        self.compendium_data["extensions"]["entries"][self.current_entry]["track_by_name"] = track_by_name
         tags = []
         for i in range(self.tags_list.count()):
             item = self.tags_list.item(i)
@@ -954,6 +1038,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             
             # Emit signal with project name
             self.compendium_updated.emit(self.project_name)
+            self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
                 print("Error saving compendium data:", e)
@@ -1095,6 +1180,17 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.details_editor.blockSignals(True)
             self.details_editor.setPlainText(extended_data.get("details", ""))
             self.details_editor.blockSignals(False)
+            self.alias_line_edit.blockSignals(True)
+            aliases_data = extended_data.get("aliases", [])
+            if isinstance(aliases_data, str):
+                alias_text = aliases_data
+            else:
+                alias_text = ', '.join(aliases_data)
+            self.alias_line_edit.setText(alias_text)
+            self.alias_line_edit.blockSignals(False)
+            self.track_checkbox.blockSignals(True)
+            self.track_checkbox.setChecked(extended_data.get("track_by_name", True))
+            self.track_checkbox.blockSignals(False)
             self.tags_list.clear()
             for tag in extended_data.get("tags", []):
                 if isinstance(tag, dict):
@@ -1114,7 +1210,15 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.relationships_list.addTopLevelItem(rel_item)
             self.load_images(extended_data.get("images", []))
         else:
+            self.details_editor.blockSignals(True)
             self.details_editor.clear()
+            self.details_editor.blockSignals(False)
+            self.alias_line_edit.blockSignals(True)
+            self.alias_line_edit.clear()
+            self.alias_line_edit.blockSignals(False)
+            self.track_checkbox.blockSignals(True)
+            self.track_checkbox.setChecked(True)
+            self.track_checkbox.blockSignals(False)
             self.tags_list.clear()
             self.relationships_list.clear()
             self.clear_images()
@@ -1125,7 +1229,15 @@ OUTPUT FORMAT (JSON only, no commentary):
     def clear_entry_ui(self):
         self.entry_name_label.setText(_("No entry selected"))
         self.editor.clear()
+        self.details_editor.blockSignals(True)
         self.details_editor.clear()
+        self.details_editor.blockSignals(False)
+        self.alias_line_edit.blockSignals(True)
+        self.alias_line_edit.clear()
+        self.alias_line_edit.blockSignals(False)
+        self.track_checkbox.blockSignals(True)
+        self.track_checkbox.setChecked(True)
+        self.track_checkbox.blockSignals(False)
         self.tags_list.clear()
         self.relationships_list.clear()
         self.clear_images()
