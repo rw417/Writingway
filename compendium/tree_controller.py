@@ -36,8 +36,12 @@ class TreeController:
 
     def get_entry_item(self, entry_name: str):
         """Return the QTreeWidgetItem for entry_name, or None if not found."""
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
+        return self.get_entry_item_in_tree(self.tree, entry_name)
+
+    @staticmethod
+    def get_entry_item_in_tree(tree: QTreeWidget, entry_name: str):
+        for i in range(tree.topLevelItemCount()):
+            cat_item = tree.topLevelItem(i)
             for j in range(cat_item.childCount()):
                 entry_item = cat_item.child(j)
                 if entry_item.text(0) == entry_name:
@@ -45,16 +49,23 @@ class TreeController:
         return None
 
     def find_and_select_entry(self, entry_name: str):
-        item = self.get_entry_item(entry_name)
+        return self.find_and_select_entry_in_tree(self.tree, entry_name)
+
+    @staticmethod
+    def find_and_select_entry_in_tree(tree: QTreeWidget, entry_name: str):
+        item = TreeController.get_entry_item_in_tree(tree, entry_name)
         if item is not None:
-            self.tree.setCurrentItem(item)
+            tree.setCurrentItem(item)
         return item
 
     def update_relation_combo_items(self, combo):
+        self.populate_relation_combo_from_tree(self.tree, combo)
+
+    @staticmethod
+    def populate_relation_combo_from_tree(tree: QTreeWidget, combo):
         combo.clear()
-        data = self.model.as_data()
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
+        for i in range(tree.topLevelItemCount()):
+            cat_item = tree.topLevelItem(i)
             for j in range(cat_item.childCount()):
                 entry_item = cat_item.child(j)
                 combo.addItem(entry_item.text(0))
@@ -150,3 +161,12 @@ class TreeController:
                 if isinstance(tag_color, str):
                     color = QColor(tag_color)
         entry_item.setForeground(0, QBrush(color))
+
+    @staticmethod
+    def find_category_item_in_tree(tree: QTreeWidget, category_name: str):
+        root = tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            cat_item = root.child(i)
+            if cat_item.text(0) == category_name and cat_item.data(0, Qt.UserRole) == "category":
+                return cat_item
+        return None

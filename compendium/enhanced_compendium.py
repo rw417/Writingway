@@ -168,7 +168,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         if not self._is_item_valid(item):
             # Attempt to re-acquire the tree item by name; if it no longer
             # exists we simply clear the dirty flag and proceed.
-            item = self.find_and_select_entry(self.current_entry)
+            item = self._select_entry_by_name(self.current_entry)
             if item is None:
                 self.dirty = False
                 return True
@@ -185,21 +185,25 @@ class EnhancedCompendiumWindow(QMainWindow):
     def _rebind_current_entry_item(self) -> None:
         """Refresh the cached tree item for the current entry after repopulating."""
         if hasattr(self, "current_entry"):
-            item = self.find_and_select_entry(self.current_entry)
+            item = self._select_entry_by_name(self.current_entry)
             if item is not None:
                 self.current_entry_item = item
             else:
                 # The entry may have been removed; clear UI state to stay in sync.
                 self.clear_entry_ui()
 
-    def _find_category_item(self, category_name: str):
-        """Return the QTreeWidgetItem for the given category name, if present."""
-        root = self.tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            cat_item = root.child(i)
-            if cat_item.text(0) == category_name and cat_item.data(0, Qt.UserRole) == "category":
-                return cat_item
-        return None
+    def _select_entry_by_name(self, entry_name: str):
+        controller = getattr(self, "tree_controller", None)
+        if controller:
+            return controller.find_and_select_entry(entry_name)
+        return TreeController.find_and_select_entry_in_tree(self.tree, entry_name)
+
+    def _refresh_relation_combo(self):
+        controller = getattr(self, "tree_controller", None)
+        if controller:
+            controller.update_relation_combo_items(self.rel_entry_combo)
+        else:
+            TreeController.populate_relation_combo_from_tree(self.tree, self.rel_entry_combo)
     
     def create_toolbar(self):
         toolbar = QToolBar(_("Project Toolbar"), self)
@@ -259,13 +263,11 @@ class EnhancedCompendiumWindow(QMainWindow):
     def on_project_combo_changed(self, new_project):
         """Update the project and reload the compendium when a different project is selected."""
         self.change_project(new_project)
-        self.select_first_entry()
-
-    def select_first_entry(self):
-        """Select the first non-category entry in the tree."""
-        if getattr(self, 'tree_controller', None):
-            return self.tree_controller.select_first_entry()
-        return TreeController.select_first_entry_in_tree(self.tree)
+        controller = getattr(self, 'tree_controller', None)
+        if controller:
+            controller.select_first_entry()
+        else:
+            TreeController.select_first_entry_in_tree(self.tree)
     
     def change_project(self, new_project):
         self.project_name = new_project
@@ -400,13 +402,10 @@ class EnhancedCompendiumWindow(QMainWindow):
                     cat_item.setExpanded(True)
             # Update relations UI
             # update relation combo
-            if getattr(self, 'tree_controller', None):
-                try:
-                    self.tree_controller.update_relation_combo_items(self.rel_entry_combo)
-                except Exception as ex:
-                    raise
-            else:
-                self.update_relation_combo()
+            try:
+                self._refresh_relation_combo()
+            except Exception as ex:
+                raise
             self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
@@ -449,9 +448,13 @@ class EnhancedCompendiumWindow(QMainWindow):
         current_entry = getattr(self, "current_entry", None)
         self.populate_compendium()
         if current_entry:
-            self.find_and_select_entry(current_entry)
+            self._select_entry_by_name(current_entry)
         else:
-            self.select_first_entry()
+            controller = getattr(self, 'tree_controller', None)
+            if controller:
+                controller.select_first_entry()
+            else:
+                TreeController.select_first_entry_in_tree(self.tree)
         self.compendium_updated.emit(self.project_name)
 
     def _apply_pending_external_reload_if_needed(self):
@@ -459,19 +462,6 @@ class EnhancedCompendiumWindow(QMainWindow):
             if self._reload_timer.isActive():
                 self._reload_timer.stop()
             self._perform_compendium_reload()
-    
-    def update_relation_combo(self):
-        """Populate the relationship combo box with available entries."""
-        if getattr(self, 'tree_controller', None):
-            self.tree_controller.update_relation_combo_items(self.rel_entry_combo)
-            return
-        self.rel_entry_combo.clear()
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            for j in range(cat_item.childCount()):
-                entry_item = cat_item.child(j)
-                entry_name = entry_item.text(0)
-                self.rel_entry_combo.addItem(entry_name)
     
     def connect_signals(self):
         """Connect UI signals to their respective handlers."""
@@ -530,9 +520,9 @@ class EnhancedCompendiumWindow(QMainWindow):
             item = None
         if item is None:
             if original_item_type == "entry" and original_item_name:
-                item = self.find_and_select_entry(original_item_name)
+                item = self._select_entry_by_name(original_item_name)
             elif original_item_type == "category" and original_item_name:
-                item = self._find_category_item(original_item_name)
+                item = TreeController.find_category_item_in_tree(self.tree, original_item_name)
         if not self._is_item_valid(item):
             return
         item_type = original_item_type if original_item_type is not None else item.data(0, Qt.UserRole)
@@ -641,7 +631,7 @@ class EnhancedCompendiumWindow(QMainWindow):
     def open_related_entry(self, item, column):
         """Double-click a relationship to open the corresponding entry."""
         entry_name = item.text(0)
-        self.find_and_select_entry(entry_name)
+        self._select_entry_by_name(entry_name)
 
     def sanitize(self, text):
         return re.sub(r'\W+', '', text)
@@ -1045,8 +1035,8 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.compendium_data = self.model.as_data()
             self.populate_compendium()
             # find and select the new entry
-            self.find_and_select_entry(name)
-            self.update_relation_combo()
+            self._select_entry_by_name(name)
+            self._refresh_relation_combo()
     
     def delete_category(self, category_item):
         category_name = category_item.text(0) if self._is_item_valid(category_item) else None
@@ -1069,7 +1059,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.model.save()
             self.compendium_data = self.model.as_data()
             self.populate_compendium()
-            self.update_relation_combo()
+            self._refresh_relation_combo()
             self._rebind_current_entry_item()
     
     def delete_entry(self, entry_item):
@@ -1091,7 +1081,7 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.clear_entry_ui()
             else:
                 self._rebind_current_entry_item()
-            self.update_relation_combo()
+            self._refresh_relation_combo()
     
     def rename_item(self, item, item_type):
         current_text = item.text(0)
@@ -1119,7 +1109,7 @@ OUTPUT FORMAT (JSON only, no commentary):
                 item.setText(0, new_text)
             self.save_compendium_to_file()
             if item_type == "entry":
-                self.update_relation_combo()
+                self._refresh_relation_combo()
     
     def move_item(self, item, direction):
         moved = False
@@ -1276,17 +1266,4 @@ OUTPUT FORMAT (JSON only, no commentary):
         self.show()
         self.raise_()
         if entry_name:
-            self.find_and_select_entry(entry_name)
-
-    def find_and_select_entry(self, entry_name):
-        """Search the tree and select an entry by name."""
-        if getattr(self, 'tree_controller', None):
-            return self.tree_controller.find_and_select_entry(entry_name)
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            for j in range(cat_item.childCount()):
-                entry_item = cat_item.child(j)
-                item_text = entry_item.text(0)
-                if item_text == entry_name:
-                    self.tree.setCurrentItem(entry_item)
-                    return
+            self._select_entry_by_name(entry_name)
