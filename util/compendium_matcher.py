@@ -285,6 +285,13 @@ class MatchDetailsPopup(QWidget):
         layout.addWidget(self._name_label)
         layout.addWidget(self._description_label)
 
+        # Ensure the popup and its child widgets show the pointing-hand cursor
+        # while hovered, matching their clickable behavior.
+        for widget in (self, self._category_label, self._name_label, self._description_label):
+            if hasattr(widget, "setAttribute"):
+                widget.setAttribute(Qt.WA_Hover, True)
+            widget.setProperty("wwForceHandCursor", True)
+
     def set_entry_details(self, category: str, name: str, description: str, entry_uuid: str) -> None:
         self._category_label.setText(category.strip() or "")
         self._name_label.setText(name.strip() or "")

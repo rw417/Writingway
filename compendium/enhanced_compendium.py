@@ -16,6 +16,11 @@ import re
 import uuid
 from langchain.prompts import PromptTemplate
 
+try:
+    import sip  # type: ignore[import]
+except ImportError:  # pragma: no cover - sip may not be available in headless tests
+    sip = None  # type: ignore[assignment]
+
 from .ai_compendium_dialog import AICompendiumDialog
 from settings.llm_api_aggregator import WWApiAggregator
 from settings.settings_manager import WWSettingsManager
@@ -1244,7 +1249,21 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.tree.setCurrentItem(entry_item)
                 self.save_compendium_to_file()
     
+    def _is_item_valid(self, item: QTreeWidgetItem | None) -> bool:
+        if item is None:
+            return False
+        if sip is None:
+            return True
+        try:
+            return not sip.isdeleted(item)
+        except RuntimeError:
+            return False
+
     def on_item_changed(self, current, previous):
+        if not self._is_item_valid(previous):
+            previous = None
+        if not self._is_item_valid(current):
+            current = None
         # Save changes to the previous entry if it exists and is dirty
         if previous is not None and previous.data(0, Qt.UserRole) == "entry" and self.dirty:
             self.save_entry(previous)
