@@ -135,10 +135,10 @@ class ProjectWindow(QMainWindow):
         scene_doc_id = f"{self.model.project_name}:scene_editor"
         beats_doc_id = f"{self.model.project_name}:action_beats"
         self._scene_match_highlighter = self.compendium_match_service.attach_highlighter(
-            self.scene_editor.editor.document(), scene_doc_id
+            self.scene_editor.editor.document(), scene_doc_id, text_widget=self.scene_editor.editor
         )
         self._action_beats_highlighter = self.compendium_match_service.attach_highlighter(
-            self.right_stack.prompt_input.document(), beats_doc_id
+            self.right_stack.prompt_input.document(), beats_doc_id, text_widget=self.right_stack.prompt_input
         )
         app = QApplication.instance()
         if app:

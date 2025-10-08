@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from PyQt5.QtCore import QObject, pyqtSignal, QFileSystemWatcher, QTimer
+from PyQt5.QtCore import QObject, pyqtSignal, QFileSystemWatcher, QTimer, Qt, QPoint, QEvent
 from PyQt5.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+try:
+    import sip  # type: ignore[import]
+except ImportError:  # pragma: no cover - sip may not be available in headless tests
+    sip = None  # type: ignore[assignment]
 
 from compendium.compendium_manager import CompendiumManager
 
@@ -17,6 +24,8 @@ class TermInfo:
 
     entry_name: str
     entry_uuid: str
+    category_name: str
+    description: str
     term: str
     source: str  # "name" or "alias"
 
@@ -125,6 +134,8 @@ class MatchRegistry(QObject):
             {
                 "entry_name": span.term_info.entry_name,
                 "entry_uuid": span.term_info.entry_uuid,
+                "category_name": span.term_info.category_name,
+                "description": span.term_info.description,
                 "term": span.term_info.term,
                 "source": span.term_info.source,
                 "block": block_number,
@@ -178,6 +189,18 @@ class MatchRegistry(QObject):
     def document_ids(self) -> List[str]:
         return list(self._documents.keys())
 
+    def find_match_at(self, document_id: str, position: int) -> Optional[Dict]:
+        doc_blocks = self._documents.get(document_id)
+        if not doc_blocks:
+            return None
+        for block_entries in doc_blocks.values():
+            for entry in block_entries:
+                start = entry.get("start", 0)
+                length = entry.get("length", 0)
+                if start <= position < start + length:
+                    return entry
+        return None
+
 
 class TrackedMatchHighlighter(QSyntaxHighlighter):
     """Underline compendium matches and push locations into the registry."""
@@ -225,6 +248,204 @@ class TrackedMatchHighlighter(QSyntaxHighlighter):
         )
 
 
+class MatchDetailsPopup(QWidget):
+    """Popup widget showing compendium match information."""
+
+    entry_activated = pyqtSignal(str, str)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._entry_name: Optional[str] = None
+        self._entry_uuid: Optional[str] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(6)
+
+        self._category_label = QLabel()
+        cat_font = self._category_label.font()
+        cat_font.setPointSize(max(cat_font.pointSize() - 2, 8))
+        self._category_label.setFont(cat_font)
+        self._category_label.setStyleSheet("color: #666; text-transform: uppercase;")
+
+        self._name_label = QLabel()
+        name_font = self._name_label.font()
+        name_font.setPointSize(name_font.pointSize() + 4)
+        name_font.setBold(True)
+        self._name_label.setFont(name_font)
+
+        self._description_label = QLabel()
+        self._description_label.setWordWrap(True)
+        self._description_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        layout.addWidget(self._category_label)
+        layout.addWidget(self._name_label)
+        layout.addWidget(self._description_label)
+
+    def set_entry_details(self, category: str, name: str, description: str, entry_uuid: str) -> None:
+        self._category_label.setText(category.strip() or "")
+        self._name_label.setText(name.strip() or "")
+        self._description_label.setText((description or "").strip() or "No description available.")
+        self._entry_name = name
+        self._entry_uuid = entry_uuid
+        self.adjustSize()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            is_inside = self.rect().contains(event.pos())
+            if is_inside and self._entry_name:
+                self.entry_activated.emit(self._entry_name, self._entry_uuid or "")
+                self.close()
+                return
+            if not is_inside:
+                event.ignore()
+                self.close()
+                return
+        super().mousePressEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        event.ignore()
+
+
+class MatchClickController(QObject):
+    """Installs handlers on a text widget to show match detail popups."""
+
+    def __init__(
+        self,
+        text_widget: QWidget,
+        document_id: str,
+        registry: MatchRegistry,
+        service: "CompendiumMatchService",
+    ) -> None:
+        super().__init__(text_widget)
+        self._widget = text_widget
+        self._document_id = document_id
+        self._registry = registry
+        self._service = service
+        self._popup: Optional[MatchDetailsPopup] = None
+        self._app = QApplication.instance()
+        self._global_filter_active = False
+
+        viewport = getattr(self._widget, "viewport", lambda: self._widget)()
+        viewport.installEventFilter(self)
+        self._viewport = viewport
+        self._widget.destroyed.connect(self._on_widget_destroyed)
+        self._registry.matches_changed.connect(self._on_matches_changed)
+
+    def shutdown(self) -> None:
+        self._close_popup()
+        if hasattr(self, "_viewport") and self._viewport:
+            self._viewport.removeEventFilter(self)
+        try:
+            self._registry.matches_changed.disconnect(self._on_matches_changed)
+        except (TypeError, RuntimeError):
+            pass
+        if self._global_filter_active and self._app:
+            with suppress(RuntimeError, TypeError):
+                self._app.removeEventFilter(self)
+            self._global_filter_active = False
+        self.deleteLater()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if obj is self._viewport:
+            if event.type() == QEvent.MouseButtonPress:
+                if self._popup:
+                    global_pos = self._viewport.mapToGlobal(getattr(event, "pos", lambda: QPoint())())
+                    if not self._popup.geometry().contains(global_pos):
+                        self._close_popup()
+            elif event.type() == QEvent.MouseButtonRelease and getattr(event, "button", lambda: None)() == Qt.LeftButton:
+                self._handle_click(event.pos())
+        elif obj is self._app and self._popup:
+            if event.type() == QEvent.MouseButtonPress:
+                target_widget = getattr(event, "widget", lambda: None)()
+                if target_widget and (target_widget is self._popup or self._popup.isAncestorOf(target_widget)):
+                    return False
+                global_pos = getattr(event, "globalPos", lambda: QPoint())()
+                if self._popup.geometry().contains(global_pos):
+                    return False
+                self._close_popup()
+        return super().eventFilter(obj, event)
+
+    def _handle_click(self, pos) -> None:
+        if not hasattr(self._widget, "cursorForPosition"):
+            return
+        cursor = self._widget.cursorForPosition(pos)
+        if not cursor:
+            return
+        position = cursor.position()
+        match = self._registry.find_match_at(self._document_id, position)
+        if not match:
+            self._close_popup()
+            return
+        self._show_popup(match, pos)
+
+    def _show_popup(self, match: Dict, click_pos) -> None:
+        self._close_popup()
+        popup = MatchDetailsPopup(self._widget)
+        popup.set_entry_details(
+            match.get("category_name", ""),
+            match.get("entry_name", ""),
+            match.get("description", ""),
+            match.get("entry_uuid", ""),
+        )
+        popup.entry_activated.connect(self._service.handle_entry_activation)
+        popup.destroyed.connect(self._on_popup_destroyed)
+        self._popup = popup
+        global_pos = self._viewport.mapToGlobal(click_pos)
+        offset = QPoint(0, self._widget.fontMetrics().height())
+        popup.move(global_pos + offset)
+        popup.show()
+        popup.raise_()
+        popup.activateWindow()
+        if self._app and not self._global_filter_active:
+            self._app.installEventFilter(self)
+            self._global_filter_active = True
+
+    def _close_popup(self) -> None:
+        if not self._popup:
+            return
+        popup = self._popup
+        self._popup = None
+        if sip is not None:
+            try:
+                if sip.isdeleted(popup):
+                    return
+            except RuntimeError:
+                return
+        with suppress(RuntimeError):
+            popup.blockSignals(True)
+        try:
+            with suppress(RuntimeError):
+                popup.close()
+        finally:
+            with suppress(RuntimeError):
+                popup.blockSignals(False)
+        if self._global_filter_active and self._app:
+            with suppress(RuntimeError, TypeError):
+                self._app.removeEventFilter(self)
+            self._global_filter_active = False
+
+    def _on_matches_changed(self, document_id: str) -> None:
+        if document_id != self._document_id:
+            return
+
+    def _on_widget_destroyed(self) -> None:
+        try:
+            self._registry.matches_changed.disconnect(self._on_matches_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self._close_popup()
+
+    def _on_popup_destroyed(self) -> None:
+        self._popup = None
+        if self._global_filter_active and self._app:
+            with suppress(RuntimeError, TypeError):
+                self._app.removeEventFilter(self)
+            self._global_filter_active = False
+
+
 class CompendiumMatchService(QObject):
     """Coordinates term loading, highlighting, and persistence for a project."""
 
@@ -237,6 +458,7 @@ class CompendiumMatchService(QObject):
         self._matcher = CompendiumMatcher()
         self.registry = MatchRegistry(self)
         self._highlighters: List[TrackedMatchHighlighter] = []
+        self._click_controllers: Dict[str, MatchClickController] = {}
         self._matches_filename = "compendium_matches.json"
         self._fs_watcher = QFileSystemWatcher(self)
         self._fs_watcher.fileChanged.connect(self._on_compendium_fs_event)
@@ -261,15 +483,29 @@ class CompendiumMatchService(QObject):
         self.matcher_reloaded.emit()
         self._reset_watcher_paths()
 
-    def attach_highlighter(self, document: QTextDocument, document_id: str, underline_color: Optional[QColor] = None) -> TrackedMatchHighlighter:
+    def attach_highlighter(
+        self,
+        document: QTextDocument,
+        document_id: str,
+        underline_color: Optional[QColor] = None,
+        text_widget: Optional[QWidget] = None,
+    ) -> TrackedMatchHighlighter:
         highlighter = TrackedMatchHighlighter(document, self._matcher, self.registry, document_id, underline_color)
         self._highlighters.append(highlighter)
+        if text_widget is not None:
+            if document_id in self._click_controllers:
+                self._click_controllers[document_id].shutdown()
+            controller = MatchClickController(text_widget, document_id, self.registry, self)
+            self._click_controllers[document_id] = controller
         return highlighter
 
     def detach_highlighter(self, highlighter: TrackedMatchHighlighter) -> None:
         if highlighter in self._highlighters:
             self._highlighters.remove(highlighter)
             self.registry.clear_document(highlighter.document_id())
+        controller = self._click_controllers.pop(highlighter.document_id(), None)
+        if controller:
+            controller.shutdown()
 
     def save_matches(self) -> None:
         project_dir = os.path.dirname(self._manager.get_filepath())
@@ -329,6 +565,14 @@ class CompendiumMatchService(QObject):
             timer.stop()
         timer.start()
 
+    def handle_entry_activation(self, entry_name: str, entry_uuid: str) -> None:
+        parent = self.parent()
+        window = getattr(parent, "enhanced_window", None)
+        if window:
+            window.open_with_entry(self.project_name, entry_name)
+            window.raise_()
+            window.activateWindow()
+
     def _extract_terms(self, data: Dict) -> List[TermInfo]:
         terms: List[TermInfo] = []
         seen_entries: Dict[Tuple[str, str], bool] = {}
@@ -336,20 +580,44 @@ class CompendiumMatchService(QObject):
         extensions_entries = data.get("extensions", {}).get("entries", {}) if data else {}
 
         for category in categories:
+            category_name = (category.get("name") or "").strip() or "Unknown"
             for entry in category.get("entries", []) or []:
                 entry_name = (entry.get("name") or "").strip()
                 if not entry_name:
                     continue
                 entry_uuid = entry.get("uuid", "")
+                content = entry.get("content", {})
+                if isinstance(content, dict):
+                    description = content.get("description", "") or ""
+                else:
+                    description = str(content) if content else ""
                 extended = extensions_entries.get(entry_name, {})
                 track = extended.get("track_by_name", True)
                 if not track:
                     continue
 
-                self._append_term(terms, seen_entries, entry_name, entry_uuid, entry_name, "name")
+                self._append_term(
+                    terms,
+                    seen_entries,
+                    entry_name,
+                    entry_uuid,
+                    category_name,
+                    description,
+                    entry_name,
+                    "name",
+                )
                 for alias in self._normalize_aliases(extended.get("aliases")):
                     if alias:
-                        self._append_term(terms, seen_entries, entry_name, entry_uuid, alias, "alias")
+                        self._append_term(
+                            terms,
+                            seen_entries,
+                            entry_name,
+                            entry_uuid,
+                            category_name,
+                            description,
+                            alias,
+                            "alias",
+                        )
         return terms
 
     def _append_term(
@@ -358,6 +626,8 @@ class CompendiumMatchService(QObject):
         seen_entries: Dict[Tuple[str, str], bool],
         entry_name: str,
         entry_uuid: str,
+        category_name: str,
+        description: str,
         term: str,
         source: str,
     ) -> None:
@@ -365,7 +635,16 @@ class CompendiumMatchService(QObject):
         if key in seen_entries:
             return
         seen_entries[key] = True
-        terms.append(TermInfo(entry_name=entry_name, entry_uuid=entry_uuid or entry_name, term=term, source=source))
+        terms.append(
+            TermInfo(
+                entry_name=entry_name,
+                entry_uuid=entry_uuid or entry_name,
+                category_name=category_name,
+                description=description,
+                term=term,
+                source=source,
+            )
+        )
 
     @staticmethod
     def _normalize_aliases(raw_aliases: Optional[object]) -> List[str]:

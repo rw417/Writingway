@@ -2,6 +2,7 @@ import os
 import json
 import re
 import shutil
+from contextlib import suppress
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QToolBar, QSplitter, QTreeWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QCheckBox, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
@@ -54,6 +55,10 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
+
+        self.project_toolbar = self.create_toolbar()
+        self.addToolBar(self.project_toolbar)
+        self.populate_project_combo(self.project_name)
 
         # Create the main splitter for the rest of the UI
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -184,6 +189,8 @@ class EnhancedCompendiumWindow(QMainWindow):
             self.project_name = "default"
         
         self.project_combo.blockSignals(False)
+        with suppress(TypeError):
+            self.project_combo.currentTextChanged.disconnect(self.on_project_combo_changed)
         self.project_combo.currentTextChanged.connect(self.on_project_combo_changed)
         self.setWindowTitle(_("Enhanced Compendium - {}").format(self.project_name))
     

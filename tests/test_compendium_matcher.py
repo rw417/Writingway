@@ -18,8 +18,8 @@ class CompendiumMatcherTests(unittest.TestCase):
 
     def test_matches_respect_word_boundaries(self):
         terms = [
-            TermInfo(entry_name="Goblin", entry_uuid="1", term="Goblin", source="name"),
-            TermInfo(entry_name="Knight", entry_uuid="2", term="Knight", source="name"),
+            TermInfo(entry_name="Goblin", entry_uuid="1", category_name="Creatures", description="Sneaky creature", term="Goblin", source="name"),
+            TermInfo(entry_name="Knight", entry_uuid="2", category_name="People", description="Armored warrior", term="Knight", source="name"),
         ]
         self.matcher.rebuild(terms)
 
@@ -35,15 +35,15 @@ class CompendiumMatcherTests(unittest.TestCase):
         self.assertEqual(text[goblin_positions[0]:goblin_positions[0] + len("Goblin")], "Goblin")
 
     def test_case_sensitive_matching(self):
-        terms = [TermInfo(entry_name="Goblin", entry_uuid="1", term="Goblin", source="name")]
+        terms = [TermInfo(entry_name="Goblin", entry_uuid="1", category_name="Creatures", description="Sneaky creature", term="Goblin", source="name")]
         self.matcher.rebuild(terms)
         matches = self.matcher.find_in_text("the goblin watches")
         self.assertEqual(matches, [])
 
     def test_alias_terms_are_detected(self):
         terms = [
-            TermInfo(entry_name="Goblin King", entry_uuid="1", term="Goblin King", source="name"),
-            TermInfo(entry_name="Goblin King", entry_uuid="1", term="GK", source="alias"),
+            TermInfo(entry_name="Goblin King", entry_uuid="1", category_name="Creatures", description="Leader of goblins", term="Goblin King", source="name"),
+            TermInfo(entry_name="Goblin King", entry_uuid="1", category_name="Creatures", description="Leader of goblins", term="GK", source="alias"),
         ]
         self.matcher.rebuild(terms)
         text = "A GK appeared and the Goblin King fled."
@@ -60,7 +60,7 @@ class MatchRegistryTests(unittest.TestCase):
 
     def test_update_block_and_serialization(self):
         registry = MatchRegistry()
-        term = TermInfo(entry_name="Goblin", entry_uuid="1", term="Goblin", source="name")
+        term = TermInfo(entry_name="Goblin", entry_uuid="1", category_name="Creatures", description="Sneaky creature", term="Goblin", source="name")
         span = MatchSpan(start=4, length=6, term_info=term)
 
         registry.update_block("doc", 0, 0, [span])

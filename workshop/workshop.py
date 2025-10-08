@@ -101,7 +101,7 @@ class WorkshopWindow(QDialog):
         if self.compendium_match_service and hasattr(self, "chat_input"):
             doc_id = f"{self.project_name}:workshop_chat"
             self._chat_match_highlighter = self.compendium_match_service.attach_highlighter(
-                self.chat_input.document(), doc_id
+                self.chat_input.document(), doc_id, text_widget=self.chat_input
             )
 
         # Connect model signal if available
