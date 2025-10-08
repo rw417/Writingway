@@ -39,6 +39,12 @@ def _(text):
     return QCoreApplication.translate("WorkshopWindow", text)
 
 
+def _extract_message_text(content):
+    if isinstance(content, dict):
+        return content.get("description", "") or ""
+    return content or ""
+
+
 class WorkshopWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,6 +65,8 @@ class WorkshopWindow(QDialog):
         self.worker = None  # LLMWorker instance
         self.pending_user_message_id = None
         self.streaming_message_id = None
+        self.compendium_match_service = getattr(parent, "compendium_match_service", None)
+        self._chat_match_highlighter = None
 
         # Conversation management
         self.conversation_history = []
@@ -90,9 +98,21 @@ class WorkshopWindow(QDialog):
         self.load_conversations()
         self.read_settings()
 
+        if self.compendium_match_service and hasattr(self, "chat_input"):
+            doc_id = f"{self.project_name}:workshop_chat"
+            self._chat_match_highlighter = self.compendium_match_service.attach_highlighter(
+                self.chat_input.document(), doc_id, text_widget=self.chat_input
+            )
+
         # Connect model signal if available
         if self.model:
             self.model.structureChanged.connect(self.context_panel.on_structure_changed)
+
+    def closeEvent(self, event):
+        if self.compendium_match_service and self._chat_match_highlighter:
+            self.compendium_match_service.detach_highlighter(self._chat_match_highlighter)
+            self._chat_match_highlighter = None
+        super().closeEvent(event)
 
     def get_available_models(self):
         cache_dir = os.path.expanduser("~/.cache/whisper")
@@ -385,7 +405,7 @@ class WorkshopWindow(QDialog):
                 if isinstance(entry, dict) and entry.get("content"):
                     payload.append({
                         "role": entry.get("role", "system"),
-                        "content": entry.get("content", "")
+                        "content": _extract_message_text(entry.get("content"))
                     })
         else:
             resolved_prompt = prompt_seed
@@ -518,7 +538,7 @@ class WorkshopWindow(QDialog):
             if prompt_messages:
                 user_entry.metadata["prompt_messages"] = deepcopy(prompt_messages)
                 user_entry.metadata["prompt_text"] = "\n\n".join(
-                    entry["content"]
+                    _extract_message_text(entry.get("content"))
                     for entry in prompt_messages
                     if entry.get("role", "system") == "system"
                 )

@@ -5,6 +5,21 @@ from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtGui import QFont, QCursor, QKeySequence
 import json
 import os
+import builtins
+
+if not hasattr(builtins, "_"):
+    def _(text):
+        return text
+    builtins._ = _
+else:
+    _ = builtins._
+
+
+def _extract_description(content):
+    if isinstance(content, dict):
+        return content.get("description", "")
+    return content or ""
+
 
 class AICompendiumDialog(QDialog):
     def __init__(self, ai_compendium_data, compendium_file, parent=None):
@@ -97,7 +112,7 @@ class AICompendiumDialog(QDialog):
             for entry in cat.get("entries", []):
                 key = f"{cat['name']}/{entry['name']}"
                 existing_entries[key] = {
-                    "content": entry.get("content", ""),
+                    "content": _extract_description(entry.get("content", "")),
                     "relationships": entry.get("relationships", [])
                 }
 
@@ -106,7 +121,7 @@ class AICompendiumDialog(QDialog):
             cat_item.setData(0, Qt.UserRole, "category")
             for entry in cat.get("entries", []):
                 entry_name = entry.get("name", "Unnamed Entry")
-                entry_content = entry.get("content", "")
+                entry_content = _extract_description(entry.get("content", ""))
                 entry_rels = entry.get("relationships", [])
                 key = f"{cat['name']}/{entry_name}"
                 entry_item = QTreeWidgetItem(cat_item, [entry_name])
@@ -573,7 +588,7 @@ class AICompendiumDialog(QDialog):
 
                         entry_data = {
                             "name": entry_name,
-                            "content": entry_content,
+                            "content": {"description": entry_content},
                             "relationships": relationships
                         }
                         cat_data["entries"].append(entry_data)

@@ -3,6 +3,17 @@ import os
 import re
 from typing import Dict, List, Optional
 
+
+def _ensure_content_dict(entry: Dict) -> Dict:
+    content = entry.get("content", "")
+    if isinstance(content, dict):
+        if "description" not in content:
+            content["description"] = ""
+        entry["content"] = content
+    else:
+        entry["content"] = {"description": content}
+    return entry
+
 class CompendiumManager:
     """Manages compendium data loading, retrieval, and reference parsing for a project."""
 
@@ -48,6 +59,9 @@ class CompendiumManager:
                 if isinstance(categories, dict):
                     new_categories = [{"name": cat, "entries": entries} for cat, entries in categories.items()]
                     data["categories"] = new_categories
+                for category in data.get("categories", []) or []:
+                    for entry in category.get("entries", []) or []:
+                        _ensure_content_dict(entry)
                 return data
             except Exception as e:
                 print(f"Error loading compendium data from {filename}: {e}")
@@ -70,7 +84,10 @@ class CompendiumManager:
             if cat.get("name") == category:
                 for e in cat.get("entries", []):
                     if e.get("name") == entry:
-                        return e.get("content", f"[No content for {entry} in category {category}]")
+                        content = e.get("content", {})
+                        if isinstance(content, dict):
+                            return content.get("description", "")
+                        return content or f"[No content for {entry} in category {category}]"
         return f"[No content for {entry} in category {category}]"
 
     def parse_references(self, message: str) -> List[str]:

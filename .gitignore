@@ -31,9 +31,6 @@ conversations.json
 Projects/
 *.txt
 
-# Ignore tests
-tests/
-
 # Ignore Windows/Mac system files
 .DS_Store
 Thumbs.db

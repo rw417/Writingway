@@ -5,6 +5,7 @@ import tiktoken
 import re
 import logging
 import threading
+import uuid
 
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QSplitter, QLabel, QShortcut, 
                              QMessageBox, QInputDialog, QApplication, QDialog,
@@ -25,6 +26,7 @@ from .embedded_prompts_panel import EmbeddedPromptsPanel
 from .outline_scene_editor_widget import OutlineSceneEditorWidget
 from compendium.enhanced_compendium import EnhancedCompendiumWindow
 from util.tts_manager import WW_TTSManager
+from util.compendium_matcher import CompendiumMatchService
 from settings.backup_manager import show_backup_dialog
 from settings.llm_api_aggregator import WWApiAggregator
 from settings.llm_worker import LLMWorker
@@ -128,6 +130,19 @@ class ProjectWindow(QMainWindow):
         self.setup_custom_variables()
 
         self.global_toolbar.toolbar.show()
+
+        self.compendium_match_service = CompendiumMatchService(self.model.project_name, self)
+        scene_doc_id = f"{self.model.project_name}:scene_editor"
+        beats_doc_id = f"{self.model.project_name}:action_beats"
+        self._scene_match_highlighter = self.compendium_match_service.attach_highlighter(
+            self.scene_editor.editor.document(), scene_doc_id, text_widget=self.scene_editor.editor
+        )
+        self._action_beats_highlighter = self.compendium_match_service.attach_highlighter(
+            self.right_stack.prompt_input.document(), beats_doc_id, text_widget=self.right_stack.prompt_input
+        )
+        app = QApplication.instance()
+        if app:
+            app.aboutToQuit.connect(self._persist_compendium_matches)
 
     def setup_custom_variables(self):
         """Setup custom variables for prompt assembly."""
@@ -300,11 +315,20 @@ class ProjectWindow(QMainWindow):
         # Check if character already exists
         for entry in characters_cat.get("entries", []):
             if entry.get("name") == name:
-                entry["content"] = description
+                content = entry.get("content", {})
+                if isinstance(content, dict):
+                    content["description"] = description
+                    entry["content"] = content
+                else:
+                    entry["content"] = {"description": description}
                 break
         else:
             # Add new character entry
-            characters_cat["entries"].append({"name": name, "content": description})
+            characters_cat["entries"].append({
+                "name": name,
+                "content": {"description": description},
+                "uuid": str(uuid.uuid4())
+            })
         
         # Ensure extensions section exists
         if "extensions" not in compendium_data:
@@ -339,6 +363,8 @@ class ProjectWindow(QMainWindow):
 
     def on_compendium_updated(self, project_name):
         if project_name == self.model.project_name:
+            if hasattr(self, "compendium_match_service"):
+                self.compendium_match_service.refresh_terms()
             if not self.right_stack.pov_character_combo:
                 return
             current_pov = self.model.settings["global_pov_character"]
@@ -391,6 +417,10 @@ class ProjectWindow(QMainWindow):
         if hasattr(self.outline_editor_widget, "main_splitter"):
             settings.setValue(f"{self.model.project_name}/mainSplitterState", self.outline_editor_widget.main_splitter.saveState())
 
+    def _persist_compendium_matches(self):
+        if hasattr(self, "compendium_match_service"):
+            self.compendium_match_service.save_matches()
+
     def closeEvent(self, a0):
         if not self.check_unsaved_changes():
             a0.ignore()
@@ -398,6 +428,7 @@ class ProjectWindow(QMainWindow):
         if hasattr(self, 'autosave_timer') and self.autosave_timer.isActive():
             self.autosave_timer.stop()
         self.write_settings()
+        self._persist_compendium_matches()
         a0.accept()
 
     def check_unsaved_changes(self, item=None):

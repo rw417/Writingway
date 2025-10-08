@@ -2,11 +2,12 @@ import os
 import json
 import re
 import shutil
+from contextlib import suppress
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QToolBar, QSplitter, QTreeWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
+                             QLineEdit, QCheckBox, QComboBox, QPushButton, QListWidget, QTabWidget, QFileDialog, QMessageBox, QTreeWidgetItem,
                              QScrollArea, QFormLayout, QGroupBox, QInputDialog, QMenu, QColorDialog, QSizePolicy, QListWidgetItem, QDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QSettings
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QFileSystemWatcher, QTimer
 from PyQt5.QtGui import QPixmap, QColor, QBrush, QFont
 import json
 import os
@@ -41,11 +42,23 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.project_name = project_name
         self.controller = parent
         self.project_window = parent  # For compatibility with AI analysis feature
+        self.file_watcher = QFileSystemWatcher(self)
+        self.file_watcher.fileChanged.connect(self._on_compendium_path_changed)
+        self.file_watcher.directoryChanged.connect(self._on_compendium_path_changed)
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(250)
+        self._reload_timer.timeout.connect(self._perform_compendium_reload)
+        self._pending_external_reload = False
 
         # Set up the central widget (which holds the main layout and splitter)
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
+
+        self.project_toolbar = self.create_toolbar()
+        self.addToolBar(self.project_toolbar)
+        self.populate_project_combo(self.project_name)
 
         # Create the main splitter for the rest of the UI
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -64,6 +77,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Set up the compendium file and populate the UI
         self.setup_compendium_file()
         self.populate_compendium()
+        self._reset_compendium_watchers()
         self.connect_signals()
 
         # Window title and size
@@ -73,6 +87,26 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Read saved settings
         self.read_settings()
     
+    @staticmethod
+    def _normalize_entry_content(entry):
+        """Ensure entry['content'] is a dict with a description field."""
+        content = entry.get("content", "")
+        changed = False
+        if isinstance(content, dict):
+            if "description" not in content:
+                content["description"] = ""
+                changed = True
+            normalized = content
+        elif isinstance(content, str):
+            normalized = {"description": content}
+            entry["content"] = normalized
+            changed = True
+        else:
+            normalized = {"description": ""}
+            entry["content"] = normalized
+            changed = True
+        return normalized, changed
+
     def read_settings(self):
         """Read window and splitter settings from QSettings."""
         settings = QSettings("MyCompany", "WritingwayProject")
@@ -155,6 +189,8 @@ class EnhancedCompendiumWindow(QMainWindow):
             self.project_name = "default"
         
         self.project_combo.blockSignals(False)
+        with suppress(TypeError):
+            self.project_combo.currentTextChanged.disconnect(self.on_project_combo_changed)
         self.project_combo.currentTextChanged.connect(self.on_project_combo_changed)
         self.setWindowTitle(_("Enhanced Compendium - {}").format(self.project_name))
     
@@ -177,6 +213,7 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.project_name = new_project
         self.setWindowTitle(_("Enhanced Compendium - {}").format(self.project_name))
         self.setup_compendium_file()
+        self._reset_compendium_watchers()
         self.populate_compendium()
 
     def setup_compendium_file(self):
@@ -187,6 +224,7 @@ class EnhancedCompendiumWindow(QMainWindow):
             os.makedirs(project_dir)
         if DEBUG:
             print("Loading compendium from:", self.compendium_file)
+        self._reset_compendium_watchers()
     
     def create_tree_view(self):
         """Create the left panel: a tree view (with a search bar) for categories and entries."""
@@ -216,6 +254,17 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.save_button = QPushButton(_("Save Changes"))
         header_layout.addWidget(self.save_button)
         center_layout.addWidget(self.header_widget)
+
+        # Entry metadata controls
+        self.metadata_widget = QWidget()
+        metadata_layout = QFormLayout(self.metadata_widget)
+        self.alias_line_edit = QLineEdit()
+        self.alias_line_edit.setPlaceholderText(_("Aliases (comma-separated)"))
+        metadata_layout.addRow(_("Aliases:"), self.alias_line_edit)
+        self.track_checkbox = QCheckBox(_("Track by name"))
+        self.track_checkbox.setChecked(True)
+        metadata_layout.addRow("", self.track_checkbox)
+        center_layout.addWidget(self.metadata_widget)
         
         # Tabs
         self.tabs = QTabWidget()
@@ -223,6 +272,8 @@ class EnhancedCompendiumWindow(QMainWindow):
         # Overview Tab
         self.overview_tab = QWidget()
         overview_layout = QVBoxLayout(self.overview_tab)
+        self.description_label = QLabel(_("Description"))
+        overview_layout.addWidget(self.description_label)
         self.editor = QTextEdit()
         self.editor.setPlaceholderText(_("This is the text the AI can see if you select this entry to be included in the prompt inside the context panel"))
         overview_layout.addWidget(self.editor)
@@ -315,7 +366,9 @@ class EnhancedCompendiumWindow(QMainWindow):
                         "entries": [
                             {
                                 "name": "Readme", 
-                                "content": "This is a dummy entry. You can view and edit extended data in this window."
+                                "content": {
+                                    "description": "This is a dummy entry. You can view and edit extended data in this window."
+                                }
                             }
                         ]
                     }
@@ -343,16 +396,25 @@ class EnhancedCompendiumWindow(QMainWindow):
             
             # Migrate to add uuid if missing
             changed = False
+            content_changed = False
             for cat in self.compendium_data.get("categories", []):
                 for entry in cat.get("entries", []):
                     if "uuid" not in entry:
                         entry["uuid"] = str(uuid.uuid4())
                         changed = True
+                    normalized_content, updated = self._normalize_entry_content(entry)
+                    if updated:
+                        content_changed = True
             if changed:
                 with open(self.compendium_file, "w", encoding="utf-8") as f:
                     json.dump(self.compendium_data, f, indent=2)
                 if DEBUG:
                     print("Added UUIDs to compendium entries and saved.")
+            elif content_changed:
+                with open(self.compendium_file, "w", encoding="utf-8") as f:
+                    json.dump(self.compendium_data, f, indent=2)
+                if DEBUG:
+                    print("Normalized compendium entry content structure and saved.")
             
             if "extensions" not in self.compendium_data:
                 self.compendium_data["extensions"] = {"entries": {}}
@@ -372,7 +434,9 @@ class EnhancedCompendiumWindow(QMainWindow):
                     entry_name = entry.get("name", "Unnamed Entry")
                     entry_item = QTreeWidgetItem(cat_item, [entry_name])
                     entry_item.setData(0, Qt.UserRole, "entry")
-                    entry_item.setData(1, Qt.UserRole, entry.get("content", ""))
+                    normalized_content, _ = self._normalize_entry_content(entry)
+                    entry_item.setData(1, Qt.UserRole, normalized_content.get("description", ""))
+                    entry_item.setData(2, Qt.UserRole, entry.get("uuid"))
                     # Set the entry color based on the first tag if available
                     if entry_name in self.compendium_data["extensions"]["entries"]:
                         extended_data = self.compendium_data["extensions"]["entries"][entry_name]
@@ -384,10 +448,61 @@ class EnhancedCompendiumWindow(QMainWindow):
                 cat_item.setExpanded(True)
             self.update_relation_combo()
             
+            self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
                 print("Error loading compendium data:", e)
             QMessageBox.warning(self, _("Error"), _("Failed to load compendium data: {}").format(str(e)))
+            self._reset_compendium_watchers()
+
+    def _reset_compendium_watchers(self):
+        if not hasattr(self, "file_watcher") or self.file_watcher is None:
+            return
+        watcher = self.file_watcher
+        # Remove existing paths to avoid duplicates when the file is rewritten
+        watcher.blockSignals(True)
+        for path in list(watcher.files()):
+            watcher.removePath(path)
+        for path in list(watcher.directories()):
+            watcher.removePath(path)
+        watcher.blockSignals(False)
+
+        if getattr(self, "compendium_file", None):
+            compendium_dir = os.path.dirname(self.compendium_file)
+            if os.path.isdir(compendium_dir):
+                watcher.addPath(compendium_dir)
+            if os.path.exists(self.compendium_file):
+                watcher.addPath(self.compendium_file)
+
+    def _on_compendium_path_changed(self, _path):
+        if DEBUG:
+            print("Compendium file change detected; scheduling reload")
+        self._reset_compendium_watchers()
+        if self.dirty:
+            self._pending_external_reload = True
+            return
+        self._reload_timer.start()
+
+    def _perform_compendium_reload(self):
+        if self.dirty:
+            self._pending_external_reload = True
+            return
+        if self._reload_timer.isActive():
+            self._reload_timer.stop()
+        self._pending_external_reload = False
+        current_entry = getattr(self, "current_entry", None)
+        self.populate_compendium()
+        if current_entry:
+            self.find_and_select_entry(current_entry)
+        else:
+            self.select_first_entry()
+        self.compendium_updated.emit(self.project_name)
+
+    def _apply_pending_external_reload_if_needed(self):
+        if getattr(self, "_pending_external_reload", False) and not self.dirty:
+            if self._reload_timer.isActive():
+                self._reload_timer.stop()
+            self._perform_compendium_reload()
     
     def update_relation_combo(self):
         """Populate the relationship combo box with available entries."""
@@ -409,6 +524,8 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.tag_input.returnPressed.connect(self.add_tag)
         self.editor.textChanged.connect(self.mark_dirty)
         self.details_editor.textChanged.connect(lambda: self.mark_dirty())
+        self.alias_line_edit.textChanged.connect(self.mark_dirty)
+        self.track_checkbox.toggled.connect(self.mark_dirty)
         self.tags_list.customContextMenuRequested.connect(self.show_tags_context_menu)
         self.add_rel_button.clicked.connect(self.add_relationship)
         self.relationships_list.customContextMenuRequested.connect(self.show_relationships_context_menu)
@@ -685,6 +802,20 @@ OUTPUT FORMAT (JSON only, no commentary):
     def save_ai_analysis(self, ai_compendium):
         """Save AI-generated compendium entries, merging with existing data."""
         try:
+            def normalize_entry_payload(entry):
+                entry_data = dict(entry)
+                content_value = entry_data.get("content", "")
+                if isinstance(content_value, dict):
+                    content_dict = dict(content_value)
+                    if "description" not in content_dict:
+                        content_dict["description"] = ""
+                else:
+                    content_dict = {"description": content_value}
+                entry_data["content"] = content_dict
+                if "uuid" not in entry_data:
+                    entry_data["uuid"] = str(uuid.uuid4())
+                return entry_data
+
             if os.path.exists(self.compendium_file):
                 with open(self.compendium_file, "r", encoding="utf-8") as f:
                     existing = json.load(f)
@@ -698,34 +829,49 @@ OUTPUT FORMAT (JSON only, no commentary):
                         existing_entries = {entry["name"]: entry for entry in existing_categories[new_cat["name"]]["entries"]}
                         for new_entry in new_cat.get("entries", []):
                             entry_name = new_entry["name"]
-                            existing_entries[entry_name] = {
-                                "name": entry_name,
-                                "content": new_entry.get("content", ""),
-                                "relationships": new_entry.get("relationships", []),
-                                "uuid": new_entry.get("uuid", str(uuid.uuid4()))
-                            }
+                            normalized_entry = normalize_entry_payload(new_entry)
+                            normalized_entry["name"] = entry_name
+                            normalized_entry["relationships"] = new_entry.get("relationships", [])
+                            existing_entries[entry_name] = normalized_entry
                             existing["extensions"]["entries"][entry_name] = {
                                 "relationships": new_entry.get("relationships", []),
                                 **existing["extensions"]["entries"].get(entry_name, {})
                             }
                         existing_categories[new_cat["name"]]["entries"] = list(existing_entries.values())
                     else:
-                        existing["categories"].append(new_cat)
+                        normalized_entries = []
                         for entry in new_cat.get("entries", []):
                             entry_name = entry["name"]
+                            normalized_entry = normalize_entry_payload(entry)
+                            normalized_entry["name"] = entry_name
+                            normalized_entry["relationships"] = entry.get("relationships", [])
+                            normalized_entries.append(normalized_entry)
                             existing["extensions"]["entries"][entry_name] = {
                                 "relationships": entry.get("relationships", [])
                             }
+                        existing["categories"].append({
+                            "name": new_cat.get("name", "Unnamed Category"),
+                            "entries": normalized_entries
+                        })
             else:
+                normalized_categories = []
+                extensions_entries = {}
+                for cat in ai_compendium.get("categories", []):
+                    normalized_entries = []
+                    for entry in cat.get("entries", []):
+                        entry_name = entry["name"]
+                        normalized_entry = normalize_entry_payload(entry)
+                        normalized_entry["name"] = entry_name
+                        normalized_entry["relationships"] = entry.get("relationships", [])
+                        normalized_entries.append(normalized_entry)
+                        extensions_entries[entry_name] = {"relationships": entry.get("relationships", [])}
+                    normalized_categories.append({
+                        "name": cat.get("name", "Unnamed Category"),
+                        "entries": normalized_entries
+                    })
                 existing = {
-                    "categories": ai_compendium.get("categories", []),
-                    "extensions": {
-                        "entries": {
-                            entry["name"]: {"relationships": entry.get("relationships", [])}
-                            for cat in ai_compendium.get("categories", [])
-                            for entry in cat.get("entries", [])
-                        }
-                    }
+                    "categories": normalized_categories,
+                    "extensions": {"entries": extensions_entries}
                 }
             with open(self.compendium_file, "w", encoding="utf-8") as f:
                 json.dump(existing, f, indent=2)
@@ -886,18 +1032,24 @@ OUTPUT FORMAT (JSON only, no commentary):
         """Save changes to a specific entry."""
         entry_name = entry_item.text(0)
         entry_item.setData(1, Qt.UserRole, self.editor.toPlainText())
+        if entry_item.data(2, Qt.UserRole) is None:
+            entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
+        self._apply_pending_external_reload_if_needed()
     
     def save_current_entry(self):
         """Save the currently displayed entry (both basic and extended data)."""
         if not hasattr(self, 'current_entry') or not hasattr(self, 'current_entry_item'):
             return
         self.current_entry_item.setData(1, Qt.UserRole, self.editor.toPlainText())
+        if self.current_entry_item.data(2, Qt.UserRole) is None:
+            self.current_entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
         self.save_extended_data()
         self.save_compendium_to_file()
         self.dirty = False
+        self._apply_pending_external_reload_if_needed()
     
     def save_extended_data(self):
         """Extract and save extended data for the current entry (details, tags, relationships, images)."""
@@ -906,6 +1058,13 @@ OUTPUT FORMAT (JSON only, no commentary):
         if self.current_entry not in self.compendium_data["extensions"]["entries"]:
             self.compendium_data["extensions"]["entries"][self.current_entry] = {}
         self.compendium_data["extensions"]["entries"][self.current_entry]["details"] = self.details_editor.toPlainText()
+        aliases = [alias.strip() for alias in self.alias_line_edit.text().split(',') if alias.strip()]
+        if aliases:
+            self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"] = aliases
+        elif "aliases" in self.compendium_data["extensions"]["entries"][self.current_entry]:
+            del self.compendium_data["extensions"]["entries"][self.current_entry]["aliases"]
+        track_by_name = self.track_checkbox.isChecked()
+        self.compendium_data["extensions"]["entries"][self.current_entry]["track_by_name"] = track_by_name
         tags = []
         for i in range(self.tags_list.count()):
             item = self.tags_list.item(i)
@@ -931,14 +1090,33 @@ OUTPUT FORMAT (JSON only, no commentary):
     def get_compendium_data(self):
         """Reconstruct the full compendium data."""
         data = {"categories": []}
+        existing_categories = {cat.get("name"): cat for cat in self.compendium_data.get("categories", [])}
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             cat_item = root.child(i)
-            cat_data = {"name": cat_item.text(0), "entries": []}
+            cat_name = cat_item.text(0)
+            cat_data = {"name": cat_name, "entries": []}
+            existing_entries = {}
+            if cat_name in existing_categories:
+                existing_entries = {entry.get("name"): entry for entry in existing_categories[cat_name].get("entries", [])}
             for j in range(cat_item.childCount()):
                 entry_item = cat_item.child(j)
                 entry_name = entry_item.text(0)
-                cat_data["entries"].append({"name": entry_name, "content": entry_item.data(1, Qt.UserRole)})
+                existing_entry = existing_entries.get(entry_name, {})
+                entry_data = dict(existing_entry) if existing_entry else {}
+                entry_data["name"] = entry_name
+                entry_uuid = entry_item.data(2, Qt.UserRole)
+                if entry_uuid:
+                    entry_data["uuid"] = entry_uuid
+                description = entry_item.data(1, Qt.UserRole) or ""
+                existing_content = entry_data.get("content", {})
+                if isinstance(existing_content, dict):
+                    content_dict = dict(existing_content)
+                    content_dict["description"] = description
+                else:
+                    content_dict = {"description": description}
+                entry_data["content"] = content_dict
+                cat_data["entries"].append(entry_data)
             data["categories"].append(cat_data)
         data["extensions"] = self.compendium_data.get("extensions", {"entries": {}})
         return data
@@ -949,11 +1127,13 @@ OUTPUT FORMAT (JSON only, no commentary):
             data = self.get_compendium_data()
             with open(self.compendium_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self.compendium_data = data
             if DEBUG:
                 print("Saved compendium data to", self.compendium_file)
             
             # Emit signal with project name
             self.compendium_updated.emit(self.project_name)
+            self._reset_compendium_watchers()
         except Exception as e:
             if DEBUG:
                 print("Error saving compendium data:", e)
@@ -972,6 +1152,7 @@ OUTPUT FORMAT (JSON only, no commentary):
             entry_item = QTreeWidgetItem(category_item, [name])
             entry_item.setData(0, Qt.UserRole, "entry")
             entry_item.setData(1, Qt.UserRole, "")
+            entry_item.setData(2, Qt.UserRole, str(uuid.uuid4()))
             category_item.setExpanded(True)
             self.tree.setCurrentItem(entry_item)
             self.save_compendium_to_file()
@@ -1095,6 +1276,17 @@ OUTPUT FORMAT (JSON only, no commentary):
             self.details_editor.blockSignals(True)
             self.details_editor.setPlainText(extended_data.get("details", ""))
             self.details_editor.blockSignals(False)
+            self.alias_line_edit.blockSignals(True)
+            aliases_data = extended_data.get("aliases", [])
+            if isinstance(aliases_data, str):
+                alias_text = aliases_data
+            else:
+                alias_text = ', '.join(aliases_data)
+            self.alias_line_edit.setText(alias_text)
+            self.alias_line_edit.blockSignals(False)
+            self.track_checkbox.blockSignals(True)
+            self.track_checkbox.setChecked(extended_data.get("track_by_name", True))
+            self.track_checkbox.blockSignals(False)
             self.tags_list.clear()
             for tag in extended_data.get("tags", []):
                 if isinstance(tag, dict):
@@ -1114,7 +1306,15 @@ OUTPUT FORMAT (JSON only, no commentary):
                 self.relationships_list.addTopLevelItem(rel_item)
             self.load_images(extended_data.get("images", []))
         else:
+            self.details_editor.blockSignals(True)
             self.details_editor.clear()
+            self.details_editor.blockSignals(False)
+            self.alias_line_edit.blockSignals(True)
+            self.alias_line_edit.clear()
+            self.alias_line_edit.blockSignals(False)
+            self.track_checkbox.blockSignals(True)
+            self.track_checkbox.setChecked(True)
+            self.track_checkbox.blockSignals(False)
             self.tags_list.clear()
             self.relationships_list.clear()
             self.clear_images()
@@ -1125,7 +1325,15 @@ OUTPUT FORMAT (JSON only, no commentary):
     def clear_entry_ui(self):
         self.entry_name_label.setText(_("No entry selected"))
         self.editor.clear()
+        self.details_editor.blockSignals(True)
         self.details_editor.clear()
+        self.details_editor.blockSignals(False)
+        self.alias_line_edit.blockSignals(True)
+        self.alias_line_edit.clear()
+        self.alias_line_edit.blockSignals(False)
+        self.track_checkbox.blockSignals(True)
+        self.track_checkbox.setChecked(True)
+        self.track_checkbox.blockSignals(False)
         self.tags_list.clear()
         self.relationships_list.clear()
         self.clear_images()
