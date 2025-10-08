@@ -327,6 +327,9 @@ class MatchClickController(QObject):
         self._popup: Optional[MatchDetailsPopup] = None
         self._app = QApplication.instance()
         self._global_filter_active = False
+        self._pressed_match_start: Optional[int] = None
+        self._pressed_match_length: Optional[int] = None
+        self._pressed_match_entry: Optional[Dict] = None
 
         viewport = getattr(self._widget, "viewport", lambda: self._widget)()
         viewport.installEventFilter(self)
@@ -351,10 +354,15 @@ class MatchClickController(QObject):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         if obj is self._viewport:
             if event.type() == QEvent.MouseButtonPress:
+                button = getattr(event, "button", lambda: None)()
+                if button == Qt.LeftButton:
+                    self._capture_pressed_match(event.pos())
+                else:
+                    self._reset_pressed_match()
                 if self._popup:
                     global_pos = self._viewport.mapToGlobal(getattr(event, "pos", lambda: QPoint())())
                     if not self._popup.geometry().contains(global_pos):
-                        self._close_popup()
+                        self._close_popup(reset_pressed=False)
             elif event.type() == QEvent.MouseButtonRelease and getattr(event, "button", lambda: None)() == Qt.LeftButton:
                 self._handle_click(event.pos())
         elif obj is self._app and self._popup:
@@ -366,20 +374,43 @@ class MatchClickController(QObject):
                 if self._popup.geometry().contains(global_pos):
                     return False
                 self._close_popup()
+                self._reset_pressed_match()
         return super().eventFilter(obj, event)
 
     def _handle_click(self, pos) -> None:
-        if not hasattr(self._widget, "cursorForPosition"):
-            return
-        cursor = self._widget.cursorForPosition(pos)
-        if not cursor:
-            return
-        position = cursor.position()
-        match = self._registry.find_match_at(self._document_id, position)
-        if not match:
+        match = self._match_at_position(pos)
+        release_position = self._position_at(pos)
+        pressed_start = self._pressed_match_start
+        pressed_length = self._pressed_match_length
+        pressed_entry = self._pressed_match_entry
+        should_show = False
+        popup_entry: Optional[Dict] = None
+
+        if (
+            match
+            and pressed_start is not None
+            and pressed_length is not None
+            and match.get("start") == pressed_start
+            and match.get("length") == pressed_length
+        ):
+            should_show = True
+            popup_entry = match
+        elif (
+            not match
+            and pressed_entry
+            and pressed_start is not None
+            and pressed_length is not None
+            and release_position is not None
+            and pressed_start <= release_position <= pressed_start + pressed_length
+        ):
+            should_show = True
+            popup_entry = pressed_entry
+
+        self._reset_pressed_match()
+        if should_show and popup_entry is not None:
+            self._show_popup(popup_entry, pos)
+        else:
             self._close_popup()
-            return
-        self._show_popup(match, pos)
 
     def _show_popup(self, match: Dict, click_pos) -> None:
         self._close_popup()
@@ -403,7 +434,38 @@ class MatchClickController(QObject):
             self._app.installEventFilter(self)
             self._global_filter_active = True
 
-    def _close_popup(self) -> None:
+    def _capture_pressed_match(self, pos: Optional[QPoint]) -> None:
+        match = self._match_at_position(pos)
+        if not match:
+            self._reset_pressed_match()
+            return
+        self._pressed_match_start = match.get("start")
+        self._pressed_match_length = match.get("length")
+        self._pressed_match_entry = match
+
+    def _reset_pressed_match(self) -> None:
+        self._pressed_match_start = None
+        self._pressed_match_length = None
+        self._pressed_match_entry = None
+
+    def _match_at_position(self, pos: Optional[QPoint]) -> Optional[Dict]:
+        if pos is None or not hasattr(self._widget, "cursorForPosition"):
+            return None
+        cursor = self._widget.cursorForPosition(pos)
+        if not cursor:
+            return None
+        position = cursor.position()
+        return self._registry.find_match_at(self._document_id, position)
+
+    def _position_at(self, pos: Optional[QPoint]) -> Optional[int]:
+        if pos is None or not hasattr(self._widget, "cursorForPosition"):
+            return None
+        cursor = self._widget.cursorForPosition(pos)
+        if not cursor:
+            return None
+        return cursor.position()
+
+    def _close_popup(self, *, reset_pressed: bool = True) -> None:
         if not self._popup:
             return
         popup = self._popup
@@ -426,6 +488,8 @@ class MatchClickController(QObject):
             with suppress(RuntimeError, TypeError):
                 self._app.removeEventFilter(self)
             self._global_filter_active = False
+        if reset_pressed:
+            self._reset_pressed_match()
 
     def _on_matches_changed(self, document_id: str) -> None:
         if document_id != self._document_id:
