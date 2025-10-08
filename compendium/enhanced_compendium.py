@@ -637,17 +637,23 @@ class EnhancedCompendiumWindow(QMainWindow):
         return re.sub(r'\W+', '', text)
     
     def analyze_scene_with_ai(self):
-        """Analyze the current scene with AI and update compendium entries."""
+        """Analyze the current scene with AI and update compendium entries.
+
+        Delegates the LLM prompt/parse work to `ai_integration.analyze_scene` and
+        keeps UI responsibilities (dialogs, warnings, saving) here.
+        """
+        from .ai_integration import analyze_scene
+
         # Check if project_window is available and has scene content
         if not hasattr(self, 'project_window') or not self.project_window:
             QMessageBox.warning(self, _("Warning"), _("No project window available for scene analysis."))
             return
-            
+
         scene_editor = self.project_window.scene_editor.editor
         if not scene_editor or not scene_editor.toPlainText():
             QMessageBox.warning(self, _("Warning"), _("No scene content available to analyze."))
             return
-            
+
         scene_content = scene_editor.toPlainText()
         current_compendium = {}
         if os.path.exists(self.compendium_file):
@@ -656,83 +662,22 @@ class EnhancedCompendiumWindow(QMainWindow):
                     current_compendium = json.load(f)
             except Exception as e:
                 logger.exception("Error loading compendium: %s", e)
-        
+
         overrides = LLMSettingsDialog.show_dialog(
             self,
             default_provider=WWSettingsManager.get_active_llm_name(),
             default_model=WWSettingsManager.get_active_llm_config().get("model", None),
-            default_timeout=60
+            default_timeout=60,
         )
         if not overrides:
             return
-        
-        analysis_template = PromptTemplate(
-            input_variables=["scene_content", "existing_compendium", "context"],
-            template="""You are a creative writing assistant analyzing a scene to extract worldbuilding information.
 
-TASK: Extract entities from the scene and format them as JSON compendium entries.
+        success, ai_compendium, err = analyze_scene(scene_content, current_compendium, overrides, context={})
+        if not success:
+            QMessageBox.warning(self, _("Error"), _("Failed to analyze scene: {}").format(err))
+            return
 
-CONTEXT:
-- Story Genre: {context.get("genre", "General Fiction")}
-- Current Chapter/Scene: {context.get("scene_name", "Unknown")}
-- POV Character: {context.get("pov", "Unknown")}
-
-RULES:
-1. Extract only FACTUAL information (no speculation)
-2. Focus on timeless traits, not temporary states
-3. For existing entries, only add NEW information
-4. Keep descriptions concise (2-3 sentences max)
-5. Use consistent naming (check existing entries first)
-
-CATEGORIES TO EXTRACT:
-- Characters: Name, age, appearance, personality, role, key traits
-- Locations: Name, type (city/room/etc), atmosphere, significance
-- Objects: Name, description, importance to plot
-- Factions/Groups: Name, purpose, members, relationships
-- Events: Name, summary, participants, consequences
-
-SCENE CONTENT:
-{scene_content}
-
-EXISTING COMPENDIUM (check for duplicates):
-{existing_compendium}
-
-OUTPUT FORMAT (JSON only, no commentary):
-{
-  "categories": [
-    {
-      "name": "Characters|Locations|Objects|Factions|Events",
-      "entries": [
-        {
-          "name": "EntityName",
-          "content": "Concise description focusing on permanent traits",
-          "relationships": [{"name": "related_entry", "type": "relationship_type"}], (optional)
-          "metadata": {"introduced_in": "scene_name", "last_seen": "scene_name"}
-        }
-      ]
-    }
-  ]
-}"""
-        )
-        prompt = analysis_template.format(
-            scene_content=scene_content,
-            existing_compendium=json.dumps(current_compendium, indent=2)
-        )
         try:
-            success, response = analyze_scene_with_llm(prompt, overrides)
-            if not success:
-                QMessageBox.warning(self, _("Error"), _("Failed to analyze scene: {}").format(response))
-                return
-            cleaned_response = preprocess_json_string(response)
-            repaired_response = repair_incomplete_json(cleaned_response)
-            if repaired_response is None:
-                QMessageBox.warning(self, _("Error"), _("AI returned invalid JSON that could not be repaired."))
-                return
-            try:
-                ai_compendium = json.loads(repaired_response)
-            except json.JSONDecodeError:
-                QMessageBox.warning(self, _("Error"), _("AI returned invalid JSON format."))
-                return
             dialog = AICompendiumDialog(ai_compendium, self.compendium_file, self)
             if dialog.exec_() == QDialog.Accepted:
                 self.save_ai_analysis(dialog.get_compendium_data())
