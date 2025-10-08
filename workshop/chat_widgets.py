@@ -51,8 +51,7 @@ class ChatBubbleWidget(QWidget):
 
         bubble_frame = QFrame()
         bubble_frame.setObjectName("chatBubble")
-        bubble_frame.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
-        bubble_frame.setMaximumWidth(480)
+        bubble_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         bubble_frame_layout = QVBoxLayout(bubble_frame)
         bubble_frame_layout.setContentsMargins(14, 10, 14, 10)
 
@@ -105,8 +104,10 @@ class ChatBubbleWidget(QWidget):
         self._bubble_frame = bubble_frame
         self._controls_layout = controls_layout
         self._controls_container = container
+        self._bubble_width_ratio = 0.9
 
         self._apply_styles()
+        self._update_bubble_width()
 
     def _apply_styles(self):
         palette = self.palette()
@@ -142,6 +143,7 @@ class ChatBubbleWidget(QWidget):
         content = self._render_html(message.content)
         self.content_label.setText(content)
         self._apply_styles()
+        self._update_bubble_width()
         self.update_variant_controls()
 
     def update_variant_controls(self):
@@ -171,6 +173,23 @@ class ChatBubbleWidget(QWidget):
         bolded = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
         italicized = re.sub(r"\*(.+?)\*", r"<i>\1</i>", bolded)
         return italicized
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_bubble_width()
+
+    def _update_bubble_width(self):
+        if not hasattr(self, "_bubble_frame"):
+            return
+        available_width = max(self.width(), 0)
+        if available_width <= 0:
+            return
+        target_width = int(available_width * self._bubble_width_ratio)
+        if target_width <= 0:
+            target_width = available_width
+        self._bubble_frame.setMaximumWidth(target_width)
+        self._bubble_frame.setMinimumWidth(min(target_width, available_width))
+        self._bubble_frame.updateGeometry()
 
 
 class ChatListWidget(QListWidget):

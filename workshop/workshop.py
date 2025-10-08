@@ -19,6 +19,7 @@ from PyQt5.QtGui import QCursor, QPixmap, QFont, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import QShortcut
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
+from muse.prompt_handler import assemble_final_prompt
 from settings.settings_manager import WWSettingsManager
 from settings.theme_manager import ThemeManager
 from settings.llm_api_aggregator import WWApiAggregator
@@ -30,7 +31,6 @@ from .conversation_history_manager import estimate_conversation_tokens, summariz
 from .embedding_manager import EmbeddingIndex
 from compendium.context_panel import ContextPanel
 from .rag_pdf import PdfRagApp
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 
 TOKEN_LIMIT = 2000
 
@@ -43,6 +43,12 @@ class WorkshopWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_("Workshop"))
+        flags = self.windowFlags()
+        flags |= Qt.Window
+        flags |= Qt.WindowMinimizeButtonHint
+        flags |= Qt.WindowMaximizeButtonHint
+        flags &= ~Qt.WindowContextHelpButtonHint
+        self.setWindowFlags(flags)
         self.controller = parent
         self.model = getattr(parent, "model", None) if parent else None
         self.project_name = getattr(self.model, "project_name", "DefaultProject") if parent else "DefaultProject"
@@ -248,8 +254,11 @@ class WorkshopWindow(QDialog):
 
         # Context Panel
         self.context_panel = ContextPanel(self.structure, self.project_name, parent=self)
+        self.context_panel.setMinimumWidth(150)
         self.inner_splitter.addWidget(self.context_panel)
         self.inner_splitter.setSizes([500, 300])
+        self._left_panel_last_width = 500
+        self._context_panel_last_width = max(300, self.context_panel.minimumWidth())
 
         chat_layout.addWidget(self.inner_splitter)
         self.outer_splitter.addWidget(chat_panel)
@@ -285,6 +294,9 @@ class WorkshopWindow(QDialog):
         self.update_chat_list_font()
         self.outer_splitter.setSizes(outer_splitter_sizes)
         self.inner_splitter.setSizes(inner_splitter_sizes)
+        if len(inner_splitter_sizes) >= 2:
+            self._left_panel_last_width = max(inner_splitter_sizes[0], 0)
+            self._context_panel_last_width = max(inner_splitter_sizes[1], self.context_panel.minimumWidth())
 
     def write_settings(self):
         settings = QSettings("MyCompany", "WritingwayProject")
@@ -314,107 +326,94 @@ class WorkshopWindow(QDialog):
         if hasattr(self, "chat_list"):
             self.chat_list.setStyleSheet(f"QLabel {{ font-size: {self.font_size}pt; }}")
 
-    def construct_message(self):
-        """Construct the full conversation payload sent to the LLM using ChatPromptTemplate."""
-        user_message = self.chat_input.toPlainText().strip()
-        if not user_message:
-            return [], {}, None
+    def construct_message(self, *, allow_empty: bool = False):
+        """Construct the conversation payload for the Workshop chat."""
+        raw_user_message = self.chat_input.toPlainText()
+        user_message = raw_user_message.strip()
+        if not user_message and not allow_empty:
+            return [], {}, None, []
 
-        # Build augmented message with context
-        augmented_message = user_message
+        # Build augmented message with context selections and retrieved passages
+        augmented_message = user_message if user_message else ""
+
         context_text = self.context_panel.get_selected_context_text()
         if context_text:
-            augmented_message += "\n\nContext:\n" + context_text
+            if augmented_message:
+                augmented_message += "\n\n"
+            augmented_message += "Context:\n" + context_text
 
-        # Retrieve FAISS context
-        retrieved_context = self.embedding_index.query(user_message)
+        retrieved_context = self.embedding_index.query(user_message) if user_message else []
         if retrieved_context:
             augmented_message += "\n[Retrieved Context]:\n" + "\n".join(retrieved_context)
 
-        # Construct conversation payload using ChatPromptTemplate
-        conversation_payload = []
+        history_payload = []
         for message in self.conversation_history:
             if message.id == self.pending_user_message_id and message.role == "user":
                 continue
             if message.id == self.streaming_message_id and not message.content.strip():
                 continue
             payload_content = message.metadata.get("augmented_content", message.content) if message.role == "user" else message.content
-            conversation_payload.append({"role": message.role, "content": payload_content})
+            history_payload.append({"role": message.role, "content": payload_content})
 
         overrides = {}
+        prompt_messages = []
         prompt_config = self.prompt_panel.get_prompt()
         if prompt_config:
             overrides = self.prompt_panel.get_overrides()
+            prompt_messages = assemble_final_prompt(prompt_config, None) or []
 
-        template = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(prompt_config.get("text", "") if prompt_config and not conversation_payload else ""),
-            HumanMessagePromptTemplate.from_template("{user_message}")
-        ])
-
-        messages = template.format_messages(user_message=augmented_message)
-
-        if not conversation_payload and prompt_config:
-            conversation_payload.append({
-                "role": "system",
-                "content": messages[0].content if len(messages) > 1 else ""
-            })
-        conversation_payload.append({
-            "role": "user",
-            "content": messages[-1].content
-        })
+        conversation_payload = []
+        if prompt_messages:
+            conversation_payload.extend(deepcopy(prompt_messages))
+        conversation_payload.extend(history_payload)
+        conversation_payload.append({"role": "user", "content": augmented_message})
 
         if estimate_conversation_tokens(conversation_payload) > TOKEN_LIMIT:
             summary = summarize_conversation(conversation_payload, overrides=overrides)
-            conversation_payload = [
-                {"role": "system", "content": prompt_config.get("text", "") if prompt_config else ""},
-                {"role": "user", "content": summary}
-            ]
+            conversation_payload = []
+            if prompt_messages:
+                conversation_payload.extend(deepcopy(prompt_messages))
+            conversation_payload.append({"role": "user", "content": summary})
 
-        return conversation_payload, overrides, prompt_config
+        return conversation_payload, overrides, prompt_config, prompt_messages
 
-    def build_payload_for_history(self, messages, prompt_text=None):
+    def build_payload_for_history(self, messages, prompt_seed=None):
         payload = []
-        resolved_prompt = prompt_text
-        if resolved_prompt is None:
-            prompt_config = self.prompt_panel.get_prompt()
-            resolved_prompt = prompt_config.get("text", "") if prompt_config else ""
+
+        if isinstance(prompt_seed, list):
+            for entry in prompt_seed:
+                if isinstance(entry, dict) and entry.get("content"):
+                    payload.append({
+                        "role": entry.get("role", "system"),
+                        "content": entry.get("content", "")
+                    })
+        else:
+            resolved_prompt = prompt_seed
+            if resolved_prompt is None:
+                prompt_config = self.prompt_panel.get_prompt()
+                prompt_messages = assemble_final_prompt(prompt_config, None) if prompt_config else []
+                if prompt_messages:
+                    payload.extend(deepcopy(prompt_messages))
+            elif isinstance(resolved_prompt, str) and resolved_prompt.strip():
+                payload.append({"role": "system", "content": resolved_prompt})
 
         message_list = list(messages)
-        if resolved_prompt and len(message_list) <= 1:
-            payload.append({"role": "system", "content": resolved_prompt})
-        elif resolved_prompt and not message_list:
-            payload.append({"role": "system", "content": resolved_prompt})
-
         for message in message_list:
             content = message.metadata.get("augmented_content", message.content) if message.role == "user" else message.content
             payload.append({"role": message.role, "content": content})
 
         return payload
-        conversation_payload.append({
-            "role": "user",
-            "content": messages[-1].content
-        })
-
-        # Summarize if token limit is exceeded
-        if estimate_conversation_tokens(conversation_payload) > TOKEN_LIMIT:
-            summary = summarize_conversation(conversation_payload, overrides=overrides)
-            conversation_payload = [
-                {"role": "system", "content": prompt_config.get("text", "") if prompt_config else ""},
-                {"role": "user", "content": summary}
-            ]
-
-        return conversation_payload
 
     def preview_prompt(self):
         """Preview the full conversation payload sent to the LLM."""
-        conversation_payload, _, _ = self.construct_message()
+        conversation_payload, _, _, _ = self.construct_message(allow_empty=True)
         if not conversation_payload:
             QMessageBox.warning(self, _("Empty Message"), _("Please enter a chat message."))
             return
 
         dialog = PromptPreviewDialog(
-            controller=self.controller, 
-            conversation_payload=conversation_payload, 
+            controller=self.controller,
+            conversation_payload=conversation_payload,
             parent=self
         )
         dialog.exec_()
@@ -425,10 +424,20 @@ class WorkshopWindow(QDialog):
 
     def toggle_context_panel(self):
         if self.context_panel.isVisible():
+            sizes = self.inner_splitter.sizes()
+            if len(sizes) >= 2:
+                self._left_panel_last_width = max(sizes[0], 0)
+                self._context_panel_last_width = max(sizes[1], self.context_panel.minimumWidth())
+                self.inner_splitter.setSizes([sizes[0] + sizes[1], 0])
             self.context_panel.setVisible(False)
             self.context_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book.svg"))
         else:
             self.context_panel.setVisible(True)
+            desired_width = max(self._context_panel_last_width, self.context_panel.minimumWidth())
+            left_width = max(self._left_panel_last_width, 0)
+            if left_width <= 0:
+                left_width = desired_width
+            self.inner_splitter.setSizes([left_width, desired_width])
             self.context_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book-open.svg"))
 
     def generate_unique_chat_name(self):
@@ -499,15 +508,25 @@ class WorkshopWindow(QDialog):
         QApplication.processEvents()
 
         try:
-            conversation_payload, overrides_used, prompt_config = self.construct_message()
+            conversation_payload, overrides_used, prompt_config, prompt_messages = self.construct_message()
             if not conversation_payload:
                 raise ValueError("Conversation payload is empty")
 
             overrides_for_worker = deepcopy(overrides_used)
             user_entry.metadata["augmented_content"] = conversation_payload[-1]["content"]
             user_entry.metadata["overrides"] = deepcopy(overrides_used)
-            if prompt_config:
+            if prompt_messages:
+                user_entry.metadata["prompt_messages"] = deepcopy(prompt_messages)
+                user_entry.metadata["prompt_text"] = "\n\n".join(
+                    entry["content"]
+                    for entry in prompt_messages
+                    if entry.get("role", "system") == "system"
+                )
+            elif prompt_config:
                 user_entry.metadata["prompt_text"] = prompt_config.get("text", "")
+            else:
+                user_entry.metadata.pop("prompt_text", None)
+                user_entry.metadata.pop("prompt_messages", None)
 
             assistant_entry = ChatMessage.from_legacy("assistant", "")
             self.conversation_history.append(assistant_entry)
@@ -713,7 +732,8 @@ class WorkshopWindow(QDialog):
             )
             return
 
-        payload = self.build_payload_for_history(history_up_to, user_message.metadata.get("prompt_text"))
+        prompt_seed = user_message.metadata.get("prompt_messages") or user_message.metadata.get("prompt_text")
+        payload = self.build_payload_for_history(history_up_to, prompt_seed)
         if not payload or payload[-1]["role"] != "user":
             payload.append({
                 "role": "user",
