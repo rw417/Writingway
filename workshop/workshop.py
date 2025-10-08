@@ -7,13 +7,14 @@ import json
 import logging
 import os
 import re
+from copy import deepcopy
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit,
     QPushButton, QMessageBox, QInputDialog, QFormLayout,
     QSplitter, QWidget, QLabel, QApplication, QListWidget, QListWidgetItem, 
     QMenu, QComboBox, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QPoint, QThread, pyqtSignal, QTimer, QSettings
+from PyQt5.QtCore import Qt, QPoint, QThread, pyqtSignal, QTimer, QSettings, QCoreApplication
 from PyQt5.QtGui import QCursor, QPixmap, QFont, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import QShortcut
 from muse.prompt_panel import PromptPanel
@@ -23,6 +24,8 @@ from settings.theme_manager import ThemeManager
 from settings.llm_api_aggregator import WWApiAggregator
 from settings.llm_worker import LLMWorker
 from settings.autosave_manager import load_latest_autosave
+from .chat_models import ChatMessage, clone_history_until, deserialize_messages, serialize_messages
+from .chat_widgets import ChatListWidget
 from .conversation_history_manager import estimate_conversation_tokens, summarize_conversation
 from .embedding_manager import EmbeddingIndex
 from compendium.context_panel import ContextPanel
@@ -30,6 +33,11 @@ from .rag_pdf import PdfRagApp
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 
 TOKEN_LIMIT = 2000
+
+
+def _(text):
+    return QCoreApplication.translate("WorkshopWindow", text)
+
 
 class WorkshopWindow(QDialog):
     def __init__(self, parent=None):
@@ -43,13 +51,18 @@ class WorkshopWindow(QDialog):
         self._is_initial_load = False  # Flag to prevent saving during initial load
         self.is_streaming = False  # Track streaming state
         self.worker = None  # LLMWorker instance
-        self.pre_stream_cursor_pos = None  # Store cursor position before streaming
+        self.pending_user_message_id = None
+        self.streaming_message_id = None
 
         # Conversation management
         self.conversation_history = []
         self.conversations = {}
         self.current_conversation = "Chat 1"
-        self.conversations[self.current_conversation] = []
+        self.conversations[self.current_conversation] = self.conversation_history
+        self.pending_user_text = ""
+        self.streaming_mode = None
+        self.previous_variant_index = None
+        self.streaming_variant_id = None
 
         # Initialize the embedding index for context retrieval
         self.embedding_index = EmbeddingIndex()
@@ -116,10 +129,13 @@ class WorkshopWindow(QDialog):
         chat_layout.setContentsMargins(0, 0, 0, 0)
 
         # Chat log (display area)
-        self.chat_log = QTextEdit()
-        self.chat_log.setReadOnly(True)
-        self.chat_log.setFont(QFont("Arial", self.font_size))
-        chat_layout.addWidget(self.chat_log)
+        self.chat_list = ChatListWidget(self)
+        self.update_chat_list_font()
+        self.chat_list.swipe_requested.connect(self.handle_swipe_request)
+        self.chat_list.prev_variant_requested.connect(self.handle_prev_variant)
+        self.chat_list.next_variant_requested.connect(self.handle_next_variant)
+        self.chat_list.branch_requested.connect(self.handle_branch_request)
+        chat_layout.addWidget(self.chat_list)
 
         # Splitter for input and context panel
         self.inner_splitter = QSplitter(Qt.Horizontal)
@@ -265,8 +281,8 @@ class WorkshopWindow(QDialog):
         inner_splitter_sizes = [int(size) for size in 
             settings.value("workshop_window/inner_splitter", [500, 300], type=list)]
         
-        self.chat_log.setFont(QFont("Arial", self.font_size))
         self.chat_input.setFont(QFont("Arial", self.font_size))
+        self.update_chat_list_font()
         self.outer_splitter.setSizes(outer_splitter_sizes)
         self.inner_splitter.setSizes(inner_splitter_sizes)
 
@@ -290,21 +306,19 @@ class WorkshopWindow(QDialog):
             self.update_font_size()
 
     def update_font_size(self):
-        """Apply the current font size to chat log and input."""
-        self.chat_log.setFont(QFont("Arial", self.font_size))
+        """Apply the current font size to chat bubbles and input."""
         self.chat_input.setFont(QFont("Arial", self.font_size))
+        self.update_chat_list_font()
 
-    def closeEvent(self, event):
-        self.stop_llm()
-        self.save_conversations()
-        self.write_settings()
-        event.accept()
+    def update_chat_list_font(self):
+        if hasattr(self, "chat_list"):
+            self.chat_list.setStyleSheet(f"QLabel {{ font-size: {self.font_size}pt; }}")
 
     def construct_message(self):
         """Construct the full conversation payload sent to the LLM using ChatPromptTemplate."""
         user_message = self.chat_input.toPlainText().strip()
         if not user_message:
-            return []
+            return [], {}, None
 
         # Build augmented message with context
         augmented_message = user_message
@@ -318,26 +332,64 @@ class WorkshopWindow(QDialog):
             augmented_message += "\n[Retrieved Context]:\n" + "\n".join(retrieved_context)
 
         # Construct conversation payload using ChatPromptTemplate
-        conversation_payload = list(self.conversation_history)
+        conversation_payload = []
+        for message in self.conversation_history:
+            if message.id == self.pending_user_message_id and message.role == "user":
+                continue
+            if message.id == self.streaming_message_id and not message.content.strip():
+                continue
+            payload_content = message.metadata.get("augmented_content", message.content) if message.role == "user" else message.content
+            conversation_payload.append({"role": message.role, "content": payload_content})
+
+        overrides = {}
         prompt_config = self.prompt_panel.get_prompt()
         if prompt_config:
             overrides = self.prompt_panel.get_overrides()
 
-        # Create ChatPromptTemplate
         template = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(prompt_config.get("text", "") if prompt_config and not conversation_payload else ""),
             HumanMessagePromptTemplate.from_template("{user_message}")
         ])
 
-        # Format the prompt with the augmented user message
         messages = template.format_messages(user_message=augmented_message)
 
-        # Convert LangChain messages to the expected conversation payload format
         if not conversation_payload and prompt_config:
             conversation_payload.append({
                 "role": "system",
                 "content": messages[0].content if len(messages) > 1 else ""
             })
+        conversation_payload.append({
+            "role": "user",
+            "content": messages[-1].content
+        })
+
+        if estimate_conversation_tokens(conversation_payload) > TOKEN_LIMIT:
+            summary = summarize_conversation(conversation_payload, overrides=overrides)
+            conversation_payload = [
+                {"role": "system", "content": prompt_config.get("text", "") if prompt_config else ""},
+                {"role": "user", "content": summary}
+            ]
+
+        return conversation_payload, overrides, prompt_config
+
+    def build_payload_for_history(self, messages, prompt_text=None):
+        payload = []
+        resolved_prompt = prompt_text
+        if resolved_prompt is None:
+            prompt_config = self.prompt_panel.get_prompt()
+            resolved_prompt = prompt_config.get("text", "") if prompt_config else ""
+
+        message_list = list(messages)
+        if resolved_prompt and len(message_list) <= 1:
+            payload.append({"role": "system", "content": resolved_prompt})
+        elif resolved_prompt and not message_list:
+            payload.append({"role": "system", "content": resolved_prompt})
+
+        for message in message_list:
+            content = message.metadata.get("augmented_content", message.content) if message.role == "user" else message.content
+            payload.append({"role": message.role, "content": content})
+
+        return payload
         conversation_payload.append({
             "role": "user",
             "content": messages[-1].content
@@ -355,7 +407,7 @@ class WorkshopWindow(QDialog):
 
     def preview_prompt(self):
         """Preview the full conversation payload sent to the LLM."""
-        conversation_payload = self.construct_message()
+        conversation_payload, _, _ = self.construct_message()
         if not conversation_payload:
             QMessageBox.warning(self, _("Empty Message"), _("Please enter a chat message."))
             return
@@ -431,121 +483,84 @@ class WorkshopWindow(QDialog):
             self.send_message()
 
     def send_message(self):
-        """Send a message to the LLM using streaming and append responses to chat_log."""
+        """Send a message to the LLM using streaming and update chat bubbles."""
         user_message = self.chat_input.toPlainText().strip()
         if not user_message:
             return
 
-        # Save cursor position before appending anything
-        cursor = self.chat_log.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.pre_stream_cursor_pos = cursor.position()
+        self.pending_user_text = user_message
 
-        # Append user message to chat log and conversation history
-        self.chat_log.append("You: " + user_message + "\n\n")
-        self.conversation_history.append({"role": "user", "content": user_message})
+        user_entry = ChatMessage.from_legacy("user", user_message)
+        self.conversation_history.append(user_entry)
+        self.pending_user_message_id = user_entry.id
+        self.chat_list.add_or_update_message(user_entry, select=True)
         self.conversations[self.current_conversation] = self.conversation_history
         self.save_conversations()
         QApplication.processEvents()
 
-        # Get overrides from PromptPanel
-        overrides = self.prompt_panel.get_overrides()
-
         try:
-            conversation_payload = self.construct_message()
+            conversation_payload, overrides_used, prompt_config = self.construct_message()
             if not conversation_payload:
-                return
+                raise ValueError("Conversation payload is empty")
 
-            # Add LLM response prefix
-            cursor = self.chat_log.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText("**LLM:**\n\n")
-            self.chat_log.setTextCursor(cursor)
-            QApplication.processEvents()
+            overrides_for_worker = deepcopy(overrides_used)
+            user_entry.metadata["augmented_content"] = conversation_payload[-1]["content"]
+            user_entry.metadata["overrides"] = deepcopy(overrides_used)
+            if prompt_config:
+                user_entry.metadata["prompt_text"] = prompt_config.get("text", "")
 
-            # Initialize LLMWorker for streaming
-            self.worker = LLMWorker("", overrides=overrides, conversation_history=conversation_payload)
+            assistant_entry = ChatMessage.from_legacy("assistant", "")
+            self.conversation_history.append(assistant_entry)
+            self.streaming_message_id = assistant_entry.id
+            self.chat_list.add_or_update_message(assistant_entry, select=True)
+
+            self.streaming_mode = "send"
+            self.previous_variant_index = None
+            self.streaming_variant_id = assistant_entry.active_variant.id
+
+            self.worker = LLMWorker("", overrides=overrides_for_worker, conversation_history=conversation_payload)
             self.worker.data_received.connect(self.append_streamed_response)
             self.worker.finished.connect(self.on_streaming_finished)
             self.worker.token_limit_exceeded.connect(self.handle_token_limit_error)
             self.worker.start()
-
         except Exception as e:
+            logging.error(f"Failed to start streaming: {e}", exc_info=True)
             QMessageBox.warning(self, _("Error"), _("Failed to generate response: {}").format(str(e)))
+            if self.streaming_message_id:
+                self.remove_message(self.streaming_message_id)
+            self.streaming_message_id = None
+            self.pending_user_message_id = None
+            self.pending_user_text = ""
+            self.streaming_mode = None
+            self.previous_variant_index = None
+            self.streaming_variant_id = None
             self.is_streaming = False
             self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
-            self.pre_stream_cursor_pos = None
             self.cleanup_worker()
 
     def append_streamed_response(self, chunk):
-        """Append a streamed chunk to the chat_log."""
+        """Append a streamed chunk to the active assistant bubble."""
         if not chunk or not isinstance(chunk, str):
             return
-        cursor = self.chat_log.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.chat_log.setTextCursor(cursor)
-        self.chat_log.insertPlainText(chunk)
-        self.chat_log.ensureCursorVisible()
-        QApplication.processEvents()
-
-    def extract_streamed_response(self):
-        """Extract the last LLM response from chat_log as plain text."""
-        full_text = self.chat_log.toPlainText()
-        # Find the last "**LLM:**" block
-        blocks = full_text.split("**LLM:**")
-        if len(blocks) < 2:
-            return ""
-        last_block = blocks[-1].strip()
-        return last_block
-
-    def format_chat_log_html(self):
-        """Traverse chat_log content and apply Markdown-to-HTML formatting for bold and italic."""
-        full_text = self.chat_log.toPlainText()
-        # Split into lines to process each message
-        lines = full_text.split("\n")
-        formatted_html = ""
-        for line in lines:
-            if line.strip():
-                # Apply Markdown formatting
-                formatted_line = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", line)
-                formatted_line = re.sub(r"\*(.*?)\*", r"<i>\1</i>", formatted_line)
-                formatted_html += f"<p>{formatted_line}</p>"
-            else:
-                formatted_html += "<p><br></p>"
-        # Update chat_log with formatted HTML
-        self.chat_log.clear()
-        cursor = self.chat_log.textCursor()
-        cursor.insertHtml(formatted_html)
-        self.chat_log.setTextCursor(cursor)
-        self.chat_log.ensureCursorVisible()
+        message = self.get_message_by_id(self.streaming_message_id)
+        if not message:
+            return
+        message.set_content(message.content + chunk)
+        self.chat_list.add_or_update_message(message)
         QApplication.processEvents()
 
     def on_streaming_finished(self):
         """Handle completion of streaming."""
-        logging.debug(f"Streaming finished, worker: {id(self.worker) if self.worker else None}, interrupt_flag: {WWApiAggregator.interrupt_flag.is_set()}")
-        # Append final newline for formatting
-        cursor = self.chat_log.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText("\n\n")
-        self.chat_log.setTextCursor(cursor)
-        QApplication.processEvents()
-
-        # Extract and save response
-        response = self.extract_streamed_response()
-        if response:
-            self.conversation_history.append({"role": "assistant", "content": response})
-            self.conversations[self.current_conversation] = self.conversation_history
-            self.save_conversations()
-
-        # Format chat_log with HTML
-        self.format_chat_log_html()
-
-        # Clean up
+        logging.debug(
+            "Streaming finished, worker: %s, interrupt_flag: %s",
+            id(self.worker) if self.worker else None,
+            WWApiAggregator.interrupt_flag.is_set()
+        )
         self.cleanup_worker()
+        self.finalize_streaming_message(save=True)
         self.is_streaming = False
         self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
-        self.chat_input.clear()
-        self.pre_stream_cursor_pos = None
+        QApplication.processEvents()
 
     def handle_token_limit_error(self, error_msg):
         """Handle token limit errors during streaming."""
@@ -559,65 +574,237 @@ class WorkshopWindow(QDialog):
                 logging.debug("Calling worker.stop()")
                 self.worker.stop()
                 logging.debug("Calling WWApiAggregator.interrupt()")
-                WWApiAggregator.interrupt()  # Signal the aggregator to interrupt streaming
+                WWApiAggregator.interrupt()
             logging.debug("Calling cleanup_worker")
             self.cleanup_worker()
         except Exception as e:
             logging.error(f"Error in stop_llm: {e}", exc_info=True)
             raise
 
+        assistant_message = self.get_message_by_id(self.streaming_message_id)
+        content = assistant_message.content.strip() if assistant_message else ""
+        is_swipe = self.streaming_mode == "swipe"
+
         try:
-            # Check if there is any streamed output
-            response = self.extract_streamed_response()
-            logging.debug(f"Extracted response: {response[:50] if response else None}")
-            if response:
-                # Prompt user to save or discard
+            if content:
                 reply = QMessageBox.question(
                     self,
                     _("Save Streamed Output"),
                     _("Streaming was interrupted. Would you like to save the output received so far?"),
                     QMessageBox.Save | QMessageBox.Discard
                 )
-                logging.debug(f"QMessageBox reply: {reply}")
+                logging.debug("QMessageBox reply: %s", reply)
                 if reply == QMessageBox.Save:
-                    # Save the output
-                    self.conversation_history.append({"role": "assistant", "content": response})
-                    self.conversations[self.current_conversation] = self.conversation_history
-                    self.save_conversations()
-                    # Append final newline
-                    cursor = self.chat_log.textCursor()
-                    cursor.movePosition(QTextCursor.End)
-                    cursor.insertText("\n\n")
-                    self.chat_log.setTextCursor(cursor)
-                    QApplication.processEvents()
+                    self.finalize_streaming_message(save=True)
                 else:
-                    # Discard: Remove all content added since pre_stream_cursor_pos
-                    if self.pre_stream_cursor_pos is not None:
-                        cursor = self.chat_log.textCursor()
-                        cursor.setPosition(self.pre_stream_cursor_pos)
-                        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
-                        cursor.removeSelectedText()
-                        self.chat_log.setTextCursor(cursor)
-                        QApplication.processEvents()
-                        # Remove the last user message from conversation_history
-                        if self.conversation_history and self.conversation_history[-1]["role"] == "user":
-                            self.conversation_history.pop()
-                            self.conversations[self.current_conversation] = self.conversation_history
-                            self.save_conversations()
+                    if is_swipe:
+                        self.finalize_streaming_message(save=False)
+                    else:
+                        self.finalize_streaming_message(save=False, discard_user=True, restore_input=True)
+            else:
+                if is_swipe:
+                    self.finalize_streaming_message(save=False)
+                else:
+                    self.finalize_streaming_message(save=False, discard_user=True, restore_input=True)
         except Exception as e:
             logging.error(f"Error in stop_llm response handling: {e}", exc_info=True)
             raise
 
-        try:
-            # Format chat_log with HTML
-            self.format_chat_log_html()
+        self.is_streaming = False
+        self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
 
+    def finalize_streaming_message(self, save=True, discard_user=False, restore_input=False):
+        assistant_message = self.get_message_by_id(self.streaming_message_id)
+        user_message = self.get_message_by_id(self.pending_user_message_id)
+        is_swipe = self.streaming_mode == "swipe"
+
+        should_save = bool(save and assistant_message and assistant_message.content.strip())
+
+        if assistant_message:
+            if is_swipe:
+                if should_save:
+                    self.chat_list.add_or_update_message(assistant_message)
+                else:
+                    if self.streaming_variant_id:
+                        assistant_message.remove_variant(self.streaming_variant_id)
+                    if self.previous_variant_index is not None and assistant_message.variants:
+                        assistant_message.active_index = min(self.previous_variant_index, len(assistant_message.variants) - 1)
+                    self.chat_list.add_or_update_message(assistant_message)
+            else:
+                if should_save:
+                    self.chat_list.add_or_update_message(assistant_message)
+                else:
+                    self.remove_message(self.streaming_message_id)
+
+        if discard_user and user_message and not is_swipe:
+            self.remove_message(self.pending_user_message_id)
+
+        if restore_input and self.pending_user_text:
+            self.chat_input.setPlainText(self.pending_user_text)
+            cursor = self.chat_input.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.chat_input.setTextCursor(cursor)
+        elif not restore_input and not is_swipe:
+            self.chat_input.clear()
+
+        self.conversations[self.current_conversation] = self.conversation_history
+        self.save_conversations()
+
+        self.pending_user_message_id = None
+        self.streaming_message_id = None
+        self.pending_user_text = ""
+        self.streaming_mode = None
+        self.previous_variant_index = None
+        self.streaming_variant_id = None
+
+    def get_message_by_id(self, message_id):
+        if not message_id:
+            return None
+        for message in self.conversation_history:
+            if message.id == message_id:
+                return message
+        return None
+
+    def remove_message(self, message_id):
+        if not message_id:
+            return
+        message = self.get_message_by_id(message_id)
+        if not message:
+            return
+        try:
+            self.conversation_history.remove(message)
+        except ValueError:
+            return
+        self.chat_list.remove_message(message_id)
+
+    def handle_swipe_request(self, message_id):
+        if self.is_streaming:
+            QMessageBox.information(
+                self,
+                _("Streaming in Progress"),
+                _("Please wait for the current response to finish before swiping."),
+            )
+            return
+
+        assistant_message = self.get_message_by_id(message_id)
+        if not assistant_message or assistant_message.role != "assistant":
+            return
+
+        try:
+            message_index = self.conversation_history.index(assistant_message)
+        except ValueError:
+            return
+
+        if message_index == 0:
+            QMessageBox.information(
+                self,
+                _("Swipe Unavailable"),
+                _("There's no earlier user message to regenerate from."),
+            )
+            return
+
+        history_up_to = self.conversation_history[:message_index]
+        user_message = next((msg for msg in reversed(history_up_to) if msg.role == "user"), None)
+        if not user_message:
+            QMessageBox.information(
+                self,
+                _("Swipe Unavailable"),
+                _("Swipe is only supported for assistant replies following a user message."),
+            )
+            return
+
+        payload = self.build_payload_for_history(history_up_to, user_message.metadata.get("prompt_text"))
+        if not payload or payload[-1]["role"] != "user":
+            payload.append({
+                "role": "user",
+                "content": user_message.metadata.get("augmented_content", user_message.content)
+            })
+
+        overrides_source = user_message.metadata.get("overrides")
+        if overrides_source is None:
+            overrides_source = self.prompt_panel.get_overrides() or {}
+        overrides_for_worker = deepcopy(overrides_source)
+
+        try:
+            self.pending_user_message_id = user_message.id
+            self.streaming_message_id = assistant_message.id
+            self.pending_user_text = ""
+            self.streaming_mode = "swipe"
+            self.previous_variant_index = assistant_message.active_index
+            new_variant = assistant_message.add_variant("", set_active=True)
+            self.streaming_variant_id = new_variant.id
+            self.chat_list.add_or_update_message(assistant_message, select=True)
+
+            self.worker = LLMWorker("", overrides=overrides_for_worker, conversation_history=payload)
+            self.worker.data_received.connect(self.append_streamed_response)
+            self.worker.finished.connect(self.on_streaming_finished)
+            self.worker.token_limit_exceeded.connect(self.handle_token_limit_error)
+
+            self.is_streaming = True
+            self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg"))
+            self.worker.start()
+        except Exception as e:
+            logging.error(f"Failed to start swipe regeneration: {e}", exc_info=True)
+            QMessageBox.warning(self, _("Error"), _("Failed to regenerate response: {}").format(str(e)))
+            if self.streaming_variant_id:
+                assistant_message.remove_variant(self.streaming_variant_id)
+                if self.previous_variant_index is not None:
+                    assistant_message.active_index = min(self.previous_variant_index, len(assistant_message.variants) - 1)
+                self.chat_list.add_or_update_message(assistant_message)
+            self.pending_user_message_id = None
+            self.streaming_message_id = None
+            self.streaming_mode = None
+            self.previous_variant_index = None
+            self.streaming_variant_id = None
             self.is_streaming = False
             self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
-            self.pre_stream_cursor_pos = None
-        except Exception as e:
-            logging.error(f"Error in stop_llm UI update: {e}", exc_info=True)
-            raise
+
+    def handle_prev_variant(self, message_id):
+        if self.is_streaming:
+            return
+        message = self.get_message_by_id(message_id)
+        if not message or message.role != "assistant":
+            return
+        if message.active_index <= 0:
+            return
+        message.active_index -= 1
+        self.chat_list.add_or_update_message(message, select=True)
+        self.conversations[self.current_conversation] = self.conversation_history
+        self.save_conversations()
+
+    def handle_next_variant(self, message_id):
+        if self.is_streaming:
+            return
+        message = self.get_message_by_id(message_id)
+        if not message or message.role != "assistant":
+            return
+        if message.active_index >= len(message.variants) - 1:
+            return
+        message.active_index += 1
+        self.chat_list.add_or_update_message(message, select=True)
+        self.conversations[self.current_conversation] = self.conversation_history
+        self.save_conversations()
+
+    def handle_branch_request(self, message_id):
+        if self.is_streaming:
+            QMessageBox.information(
+                self,
+                _("Streaming in Progress"),
+                _("Please wait for the current response to finish before branching."),
+            )
+            return
+
+        message = self.get_message_by_id(message_id)
+        if not message:
+            return
+
+        branch_history = clone_history_until(self.conversation_history, message_id)
+        new_conversation_name = self.generate_unique_chat_name()
+        self.conversations[new_conversation_name] = branch_history
+
+        self.conversation_list.addItem(new_conversation_name)
+        self.conversation_list.setCurrentRow(self.conversation_list.count() - 1)
+        self.save_conversations()
 
     def cleanup_worker(self):
         """Clean up the LLMWorker thread and reset LLM provider state."""
@@ -755,8 +942,10 @@ class WorkshopWindow(QDialog):
                 # Create a new default conversation
                 self.current_conversation = "Chat 1"
                 self.conversations[self.current_conversation] = []
+                self.conversation_history = self.conversations[self.current_conversation]
                 self.conversation_list.addItem(self.current_conversation)
                 self.conversation_list.setCurrentRow(0)
+                self.chat_list.clear_messages()
             # No need to manually load a conversation; itemSelectionChanged will handle it
             self.save_conversations()
 
@@ -767,75 +956,79 @@ class WorkshopWindow(QDialog):
             selected_name = selected_items[0].text()
             self.current_conversation = selected_name
             self.conversation_history = self.conversations.get(selected_name, [])
-            self.chat_log.clear()
-            for msg in self.conversation_history:
-                role = msg.get("role", "Unknown")
-                content = msg.get("content", "")
-                self.chat_log.append(f"{role.capitalize()}: {content}\n")
-            self.format_chat_log_html()
+            if self.conversation_history is None:
+                self.conversation_history = []
+                self.conversations[selected_name] = self.conversation_history
+            self.chat_list.populate(self.conversation_history)
+            self.pending_user_message_id = None
+            self.streaming_message_id = None
+            self.pending_user_text = ""
         else:
             # No conversation selected (e.g., list is empty)
             self.current_conversation = None
             self.conversation_history = []
-            self.chat_log.clear()
+            self.chat_list.clear_messages()
+            self.pending_user_message_id = None
+            self.streaming_message_id = None
+            self.pending_user_text = ""
         if not self._is_initial_load:
             self.save_conversations()
 
     def load_conversations(self):
         """Load conversations from file and initialize the UI."""
         self._is_initial_load = True
-        if os.path.exists("conversations.json"):
+        last_viewed_chat = "Chat 1"
+        conversations_path = "conversations.json"
+        self.conversations = {}
+
+        if os.path.exists(conversations_path):
             try:
-                with open("conversations.json", "r", encoding="utf-8") as f:
+                with open(conversations_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                
-                is_old_format = (
-                    isinstance(data, dict) and
-                    all(isinstance(k, str) and isinstance(v, list) and
-                        all(isinstance(m, dict) and "role" in m and "content" in m for m in v)
-                        for k, v in data.items())
-                )
-                
-                if is_old_format:
-                    self.conversations = data
-                    last_viewed_chat = list(data.keys())[0] if data else "Chat 1"
-                else:
-                    self.conversations = data.get("conversations", {"Chat 1": []})
-                    last_viewed_chat = data.get("last_viewed_chat", "Chat 1")
 
-                if not isinstance(self.conversations, dict):
+                if isinstance(data, dict) and "conversations" in data:
+                    raw_conversations = data.get("conversations", {})
+                    last_viewed_chat = data.get("last_viewed_chat", last_viewed_chat)
+                elif isinstance(data, dict):
+                    raw_conversations = data
+                else:
+                    raw_conversations = {}
+
+                for conv_name, messages in raw_conversations.items():
+                    if isinstance(messages, list):
+                        self.conversations[conv_name] = deserialize_messages(messages)
+
+                if not self.conversations:
                     self.conversations = {"Chat 1": []}
-                else:
-                    for conv_name, messages in self.conversations.items():
-                        if not isinstance(messages, list):
-                            self.conversations[conv_name] = []
-
-                self.conversation_list.clear()
-                for conv_name in self.conversations:
-                    self.conversation_list.addItem(conv_name)
-
-                # Set selection to last_viewed_chat or first item
-                if last_viewed_chat in self.conversations:
-                    for i in range(self.conversation_list.count()):
-                        if self.conversation_list.item(i).text() == last_viewed_chat:
-                            self.conversation_list.setCurrentRow(i)
-                            break
-                else:
-                    self.conversations["Chat 1"] = []
-                    self.conversation_list.addItem("Chat 1")
-                    self.conversation_list.setCurrentRow(0)
             except Exception as e:
                 logging.error(f"Error loading conversations: {e}", exc_info=True)
                 self.conversations = {"Chat 1": []}
-                self.conversation_list.clear()
-                self.conversation_list.addItem("Chat 1")
-                self.conversation_list.setCurrentRow(0)
         else:
             logging.info("No conversations.json found, initializing default")
             self.conversations = {"Chat 1": []}
-            self.conversation_list.clear()
-            self.conversation_list.addItem("Chat 1")
-            self.conversation_list.setCurrentRow(0)
+
+        self.conversation_list.blockSignals(True)
+        self.conversation_list.clear()
+        for conv_name in self.conversations:
+            self.conversation_list.addItem(conv_name)
+
+        if last_viewed_chat not in self.conversations:
+            last_viewed_chat = next(iter(self.conversations.keys()))
+
+        for i in range(self.conversation_list.count()):
+            if self.conversation_list.item(i).text() == last_viewed_chat:
+                self.conversation_list.setCurrentRow(i)
+                break
+
+        self.conversation_list.blockSignals(False)
+
+        self.current_conversation = last_viewed_chat
+        self.conversation_history = self.conversations.get(self.current_conversation, [])
+        if self.conversation_history is None:
+            self.conversation_history = []
+            self.conversations[self.current_conversation] = self.conversation_history
+
+        self.chat_list.populate(self.conversation_history)
         self._is_initial_load = False
 
     def save_conversations(self):
@@ -844,11 +1037,15 @@ class WorkshopWindow(QDialog):
             # Verify state before saving
             for name in self.conversations:
                 assert isinstance(self.conversations[name], list), f"Conversation {name} has invalid data"
+            payload = {
+                "conversations": {
+                    name: serialize_messages(messages)
+                    for name, messages in self.conversations.items()
+                },
+                "last_viewed_chat": self.current_conversation
+            }
             with open("conversations.json", "w", encoding="utf-8") as f:
-                json.dump({
-                    "conversations": self.conversations,
-                    "last_viewed_chat": self.current_conversation
-                }, f, indent=4)
+                json.dump(payload, f, indent=4)
             logging.debug("Conversations saved successfully")
         except Exception as e:
             logging.error(f"Error saving conversations: {e}", exc_info=True)
