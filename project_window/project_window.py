@@ -246,6 +246,21 @@ class ProjectWindow(QMainWindow):
     
     def switch_to_compendium(self):
         """Switch to the Compendium view."""
+        # Reload compendium data to ensure user sees the latest content
+        try:
+            if hasattr(self, 'compendium_panel') and self.compendium_panel is not None:
+                # Ensure file/path are up-to-date then populate
+                try:
+                    self.compendium_panel.setup_compendium_file()
+                except Exception:
+                    pass
+                try:
+                    self.compendium_panel.populate_compendium()
+                except Exception:
+                    # Don't block UI if reload fails; show whatever is available
+                    pass
+        except Exception:
+            pass
         self.main_stack.setCurrentWidget(self.compendium_panel)
         self.activity_bar.compendium_action.setChecked(True)
     
