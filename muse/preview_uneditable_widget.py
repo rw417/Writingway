@@ -34,6 +34,12 @@ class PreviewUneditableWidget(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
+        # Prefer per-pixel scrolling and a smaller single-step to avoid per-item jumps
+        try:
+            self.tree.setVerticalScrollMode(QTreeWidget.ScrollPerPixel)
+            self.tree.verticalScrollBar().setSingleStep(12)
+        except Exception:
+            pass
         layout.addWidget(self.tree)
         
         # Token count label
@@ -105,6 +111,11 @@ class PreviewUneditableWidget(QWidget):
             text_display.setPlainText(content)
             text_display.setReadOnly(True)
             text_display.setMinimumHeight(100)
+            # Reduce child text edits' scrollbar single-step for smoother wheel scrolling
+            try:
+                text_display.verticalScrollBar().setSingleStep(12)
+            except Exception:
+                pass
             self.tree.setItemWidget(content_item, 0, text_display)
         
         self.tree.expandAll()
