@@ -12,9 +12,9 @@ from .summary_model import SummaryModel
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
 from muse.prompt_variables import get_prompt_variables
-from muse.tweaks_widget import TweaksWidget
-from muse.preview_editable_widget import PreviewEditableWidget
-from muse.preview_uneditable_widget import PreviewUneditableWidget
+from project_window.tweaks_widget import TweaksWidget
+from project_window.preview_editable_widget import PreviewEditableWidget
+from project_window.preview_uneditable_widget import PreviewUneditableWidget
 from copy import deepcopy
 
 # gettext '_' fallback for static analysis / standalone edits

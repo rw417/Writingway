@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PyQt5.QtCore import QObject, pyqtSignal, QFileSystemWatcher, QTimer, Qt, QPoint, QEvent
-from PyQt5.QtGui import QColor, QCursor, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+from PyQt5.QtGui import (
+    QColor,
+    QCursor,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextDocument,
+    QTextLayout,
+    QFontMetrics,
+)
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 try:
@@ -17,6 +25,7 @@ except ImportError:  # pragma: no cover - sip may not be available in headless t
 
 from compendium.compendium_manager import CompendiumManager
 from util.cursor_manager import set_dynamic_clickable
+from settings.theme_manager import ThemeManager
 
 
 @dataclass(frozen=True)
@@ -220,9 +229,12 @@ class TrackedMatchHighlighter(QSyntaxHighlighter):
         self._document_id = document_id
         self._format = QTextCharFormat()
         self._format.setFontUnderline(True)
-        self._format.setUnderlineStyle(QTextCharFormat.SingleUnderline)
+        self._format.setUnderlineStyle(QTextCharFormat.DashUnderline)
         if underline_color:
             self._format.setUnderlineColor(underline_color)
+        # Hovered match state (absolute document positions)
+        self._hover_start: Optional[int] = None
+        self._hover_length: Optional[int] = None
 
     def set_matcher(self, matcher: Optional[CompendiumMatcher]) -> None:
         self._matcher = matcher
@@ -241,12 +253,48 @@ class TrackedMatchHighlighter(QSyntaxHighlighter):
         for span in matches:
             self.setFormat(span.start, span.length, self._format)
 
+        # If a hovered range overlaps this block, apply a background shade
+        if self._hover_start is not None and self._hover_length is not None:
+            block_start = block.position()
+            block_end = block_start + len(text)
+            hover_start = self._hover_start
+            hover_end = self._hover_start + self._hover_length
+            # Compute overlap
+            overlap_start = max(block_start, hover_start)
+            overlap_end = min(block_end, hover_end)
+            if overlap_start < overlap_end:
+                local_start = overlap_start - block_start
+                local_len = overlap_end - overlap_start
+                try:
+                    color = ThemeManager.get_toggle_highlight_color(None)
+                    # Preserve underline and other match styling while adding
+                    # a background for hover. Start from the existing match
+                    # format so underline remains visible.
+                    hover_fmt = QTextCharFormat(self._format)
+                    hover_fmt.setBackground(color)
+                    self.setFormat(local_start, local_len, hover_fmt)
+                except Exception:
+                    # Defensive: don't fail highlighting if theme manager unavailable
+                    pass
+
         self._registry.update_block(
             self._document_id,
             block.blockNumber(),
             block.position(),
             matches,
         )
+
+    def set_hovered_range(self, start: Optional[int], length: Optional[int]) -> None:
+        """Set the hovered absolute range (document positions). Passing None clears hover."""
+        if start == self._hover_start and length == self._hover_length:
+            return
+        self._hover_start = start
+        self._hover_length = length
+        # Repaint to apply/remove hover background
+        try:
+            self.rehighlight()
+        except Exception:
+            pass
 
 
 class MatchDetailsPopup(QWidget):
@@ -283,7 +331,24 @@ class MatchDetailsPopup(QWidget):
 
         layout.addWidget(self._category_label)
         layout.addWidget(self._name_label)
+        # Allow the description label to wrap and expand horizontally.
+        self._description_label.setWordWrap(True)
         layout.addWidget(self._description_label)
+
+        # Keep a reference to the layout for sizing calculations used when eliding text.
+        self._layout = layout
+
+        # Enforce a fixed width and a maximum height for the popup as requested.
+        # Fixed width: 350 px. Max height: 250 px.
+        try:
+            self.setFixedWidth(350)
+            self.setMaximumHeight(250)
+        except Exception:
+            # Defensive - some test environments may not support these calls.
+            pass
+
+        # Store the full description so we can compute an elided version when needed.
+        self._full_description_text: Optional[str] = None
 
         # Ensure the popup and its child widgets show the pointing-hand cursor
         # while hovered, matching their clickable behavior.
@@ -295,7 +360,9 @@ class MatchDetailsPopup(QWidget):
     def set_entry_details(self, category: str, name: str, description: str, entry_uuid: str) -> None:
         self._category_label.setText(category.strip() or "")
         self._name_label.setText(name.strip() or "")
-        self._description_label.setText((description or "").strip() or "No description available.")
+        self._full_description_text = ((description or "").strip() or "No description available.")
+        # Update visible (possibly elided) description now that we have content.
+        self._update_description_elided()
         self._entry_name = name
         self._entry_uuid = entry_uuid
         self.adjustSize()
@@ -315,6 +382,104 @@ class MatchDetailsPopup(QWidget):
 
     def focusOutEvent(self, event) -> None:  # noqa: N802
         event.ignore()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - update elided text when resized
+        # Recompute the elided description when the popup size changes.
+        try:
+            self._update_description_elided()
+        except Exception:
+            pass
+        super().resizeEvent(event)
+
+    def _update_description_elided(self) -> None:
+        """Compute a multi-line elided version of the full description so it fits
+        within the popup's available area (respecting fixed width and max height).
+        """
+        if not hasattr(self, "_full_description_text") or self._full_description_text is None:
+            return
+        text = self._full_description_text
+
+        # Determine available width inside the layout (account for left/right margins).
+        try:
+            left = self._layout.contentsMargins().left()
+            right = self._layout.contentsMargins().right()
+            available_width = max(10, self.width() - left - right)
+        except Exception:
+            available_width = max(10, self.width() - 24)
+
+        # Determine available height for the description portion by subtracting
+        # the heights of the other widgets and layout margins/spacings from the
+        # popup's maximum height (we cap to the popup max height to avoid very
+        # tall popups).
+        try:
+            max_height = min(self.maximumHeight(), 550)
+            top = self._layout.contentsMargins().top()
+            bottom = self._layout.contentsMargins().bottom()
+            spacing = self._layout.spacing()
+            cat_h = self._category_label.sizeHint().height()
+            name_h = self._name_label.sizeHint().height()
+            consumed = top + cat_h + spacing + name_h + spacing + bottom
+            available_height = max(10, max_height - consumed)
+        except Exception:
+            available_height = max(10, 550 -  (self._category_label.sizeHint().height() + self._name_label.sizeHint().height()))
+
+        font = self._description_label.font()
+        fm = QFontMetrics(font)
+        line_height = fm.lineSpacing() or fm.height() or 14
+        max_lines = max(1, int(available_height // line_height))
+
+        # Use QTextLayout to determine how the text would be broken into lines
+        # for the given font and available width.
+        tl = QTextLayout(text, font)
+        tl.beginLayout()
+        lines = []
+        while True:
+            line = tl.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(available_width)
+            lines.append((line.textStart(), line.textLength()))
+        tl.endLayout()
+
+        # If text fits within available lines, show it raw; otherwise elide the
+        # last visible line and assemble the visible portion.
+        if len(lines) <= max_lines:
+            self._description_label.setText(text)
+            return
+
+        visible = lines[:max_lines]
+        parts: List[str] = []
+        for start, length in visible[:-1]:
+            parts.append(text[start : start + length])
+
+        # Last visible line: prefer removing whole trailing words until '...' fits.
+        last_start, last_length = visible[-1]
+        last_sub = text[last_start : last_start + last_length]
+
+        # Helper to produce a candidate with trailing whole-word removal.
+        def elide_by_words(s: str) -> str:
+            # If it already fits, return as-is
+            if fm.width(s) <= available_width:
+                return s
+            words = s.rstrip().split()
+            if not words:
+                # fallback to mid-word elide
+                return fm.elidedText(s, Qt.ElideRight, available_width)
+            # Iteratively remove trailing words and test with appended ellipsis
+            for cut in range(len(words), 0, -1):
+                candidate = " ".join(words[:cut])
+                candidate_with_dots = candidate.rstrip() + "..."
+                if fm.width(candidate_with_dots) <= available_width:
+                    return candidate_with_dots
+            # If no whole-word truncation works, fallback to mid-word elide of original
+            return fm.elidedText(s, Qt.ElideRight, available_width)
+
+        elided_last = elide_by_words(last_sub)
+        parts.append(elided_last)
+
+        # Join with newline to preserve line breaks as laid out
+        final = "\n".join(parts)
+        self._description_label.setText(final)
 
 
 class MatchClickController(QObject):
@@ -491,7 +656,32 @@ class MatchClickController(QObject):
         self._popup = popup
         global_pos = self._viewport.mapToGlobal(click_pos)
         offset = QPoint(0, self._widget.fontMetrics().height())
-        popup.move(global_pos + offset)
+        target_pos = global_pos + offset
+
+        # Ensure the popup will be fully visible on screen. If it would be
+        # cropped (e.g., too low), move it up or left as needed.
+        try:
+            screen = QApplication.screenAt(target_pos) or QApplication.primaryScreen()
+            if screen:
+                geo = screen.availableGeometry()
+                popup_size = popup.sizeHint()
+                px = target_pos.x()
+                py = target_pos.y()
+                # If right edge would be off-screen, shift left.
+                if px + popup_size.width() > geo.right():
+                    px = max(geo.left(), geo.right() - popup_size.width())
+                # Use a 30px safety margin above the true bottom so the popup
+                # doesn't appear too low. If bottom would be off-screen (past
+                # geo.bottom() - 30), shift up.
+                bottom_limit = geo.bottom() - 30
+                if py + popup_size.height() > bottom_limit:
+                    py = max(geo.top(), bottom_limit - popup_size.height())
+                target_pos = QPoint(px, py)
+        except Exception:
+            # Defensive fallback: do nothing if screen info isn't available.
+            pass
+
+        popup.move(target_pos)
         popup.show()
         popup.raise_()
         popup.activateWindow()
@@ -513,19 +703,20 @@ class MatchClickController(QObject):
         self._pressed_match_length = None
         self._pressed_match_entry = None
 
-    def _match_at_position(self, pos: Optional[QPoint]) -> Optional[Dict]:
+    def _cursor_for_pos(self, pos: Optional[QPoint]):
         if pos is None or not hasattr(self._widget, "cursorForPosition"):
             return None
-        cursor = self._widget.cursorForPosition(pos)
+        return self._widget.cursorForPosition(pos)
+
+    def _match_at_position(self, pos: Optional[QPoint]) -> Optional[Dict]:
+        cursor = self._cursor_for_pos(pos)
         if not cursor:
             return None
         position = cursor.position()
         return self._registry.find_match_at(self._document_id, position)
 
     def _position_at(self, pos: Optional[QPoint]) -> Optional[int]:
-        if pos is None or not hasattr(self._widget, "cursorForPosition"):
-            return None
-        cursor = self._widget.cursorForPosition(pos)
+        cursor = self._cursor_for_pos(pos)
         if not cursor:
             return None
         return cursor.position()
@@ -578,10 +769,27 @@ class MatchClickController(QObject):
         self._reevaluate_hover_state()
 
     def _update_hover_clickable(self, pos: Optional[QPoint]) -> None:
-        is_clickable = bool(self._match_at_position(pos)) if pos is not None else False
+        # Reuse existing logic for detecting a match at the position so the
+        # cursor-change and hover shading use the same source of truth.
+        match = self._match_at_position(pos) if pos is not None else None
+        is_clickable = bool(match)
         if is_clickable != self._hover_clickable:
             self._hover_clickable = is_clickable
             set_dynamic_clickable(self._viewport, is_clickable)
+
+        # Determine hovered absolute range (from the registry entry) and
+        # update the document highlighter.
+        hovered_range = (match.get("start", 0), match.get("length", 0)) if match else None
+
+        # Find the corresponding highlighter and inform it of the hovered range.
+        if hasattr(self._service, "_highlighters"):
+            for h in self._service._highlighters:
+                if h.document_id() == self._document_id:
+                    if hovered_range:
+                        h.set_hovered_range(hovered_range[0], hovered_range[1])
+                    else:
+                        h.set_hovered_range(None, None)
+                    break
 
     def _update_hover_from_global(self, global_pos: QPoint) -> None:
         if not getattr(self, "_viewport", None):

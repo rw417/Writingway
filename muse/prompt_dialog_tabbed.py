@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QMessageBox
 from PyQt5.QtCore import Qt, QSettings, pyqtSignal
 from PyQt5 import uic
-from muse.tweaks_widget import TweaksWidget
+from project_window.tweaks_widget import TweaksWidget
 from muse.preview_widget import PreviewWidget
 
 # gettext '_' fallback for static analysis / standalone edits
