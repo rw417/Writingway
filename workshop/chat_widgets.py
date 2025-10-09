@@ -5,7 +5,7 @@ import html
 import re
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QPainter, QPaintEvent
 from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -49,7 +49,30 @@ class ChatBubbleWidget(QWidget):
         container = QVBoxLayout()
         container.setSpacing(4)
 
-        bubble_frame = QFrame()
+        # Use a custom frame that paints a rounded bubble to avoid stylesheet conflicts
+        class ChatBubbleFrame(QFrame):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self._bg_color = QColor("#ffffff")
+                self._radius = 12
+
+            def set_bg_color(self, color: str):
+                self._bg_color = QColor(color)
+                self.update()
+
+            def set_radius(self, radius: int):
+                self._radius = radius
+                self.update()
+
+            def paintEvent(self, event: QPaintEvent):
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(self._bg_color)
+                rect = self.rect()
+                painter.drawRoundedRect(rect, self._radius, self._radius)
+
+        bubble_frame = ChatBubbleFrame()
         bubble_frame.setObjectName("chatBubble")
         bubble_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         bubble_frame_layout = QVBoxLayout(bubble_frame)
@@ -113,21 +136,39 @@ class ChatBubbleWidget(QWidget):
         palette = self.palette()
         base_color = palette.color(self.backgroundRole())
         text_color = palette.color(self.foregroundRole()).name()
+        # Use explicit contrasting colors so bubbles are always visibly shaded
+        # Assistant: very light gray; User: light blue-gray
         if self._role == "user":
-            bubble_color = base_color.darker(140).name()
-            label_color = text_color
+            bubble_color = "#b0c8ee"  # light blue for user messages
+            label_color = "#001522"   # dark text for contrast
         else:
-            bubble_color = base_color.name()
-            label_color = text_color
+            bubble_color = "#D1D2D3"  # light gray for assistant messages
+            label_color = "#0b1b2b"   # dark text for contrast
         border_radius = "16px"
 
-        self.setStyleSheet(
-            f"QWidget#chatBubble {{"
-            f" background-color: {bubble_color};"
-            f" border-radius: {border_radius};"
-            f"}}"
-            f"QLabel {{ color: {label_color}; }}"
-        )
+        # Apply the background via the custom painted frame and keep label transparent
+        if hasattr(self, "_bubble_frame") and self._bubble_frame is not None:
+            # radius as integer
+            try:
+                radius_int = int(border_radius.replace("px", ""))
+            except Exception:
+                radius_int = 12
+            # flush to the custom frame painter
+            if hasattr(self._bubble_frame, "set_bg_color"):
+                self._bubble_frame.set_bg_color(bubble_color)
+                self._bubble_frame.set_radius(radius_int)
+            else:
+                # fallback to stylesheet
+                self._bubble_frame.setStyleSheet(
+                    f"background-color: {bubble_color}; border: none; border-radius: {border_radius};"
+                )
+            # Ensure the label text is visible and its background stays transparent
+            self.content_label.setStyleSheet(f"color: {label_color}; background: transparent;")
+        else:
+            # Fallback: apply to this widget (shouldn't normally happen)
+            self.setStyleSheet(
+                f"QFrame#chatBubble {{ background-color: {bubble_color}; border: none; border-radius: {border_radius}; }}"
+            )
         self.content_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.main_layout.setAlignment(Qt.AlignRight if self._role == "user" else Qt.AlignLeft)
 

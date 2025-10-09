@@ -31,6 +31,9 @@ conversations.json
 Projects/
 *.txt
 
+# Ignore local todo artifacts
+todo/*
+
 # Ignore Windows/Mac system files
 .DS_Store
 Thumbs.db

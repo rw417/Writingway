@@ -13,77 +13,137 @@ import re
 import tiktoken
 
 # gettext '_' fallback for static analysis / standalone edits
-try:
-    _
-except NameError:
+if "_" not in globals():
     _ = lambda s: s
 
 
-def send_prompt_with_ui_integration(controller, prompt_config, user_input, additional_vars=None, 
-                                    current_scene_text=None, extra_context=None, overrides=None):
-    """
-    Send a prompt to the LLM with full UI integration.
-    
+def _default_set_worker(controller, worker):
+    if hasattr(controller, "worker"):
+        controller.worker = worker
+
+
+def start_llm_stream(
+    controller,
+    *,
+    prompt,
+    overrides=None,
+    conversation_history=None,
+    on_chunk=None,
+    on_finish=None,
+    on_token_limit=None,
+    on_cleanup=None,
+    cleanup_handler=None,
+    set_worker_callback=None,
+):
+    """Create and start an LLMWorker stream with customizable callbacks.
+
     Args:
-        controller: The main window/controller with UI elements
-        prompt_config: The prompt configuration
-        user_input: The user input text (action beats)
-        additional_vars: Dictionary of additional variables
-        current_scene_text: Current scene text content
-        extra_context: Extra context from context panel
-        overrides: LLM provider/model overrides
-    
+        controller: Object owning the worker (must allow attribute assignment or set callback)
+        prompt: Prompt string OR conversation payload list passed to LLMWorker
+        overrides: Provider/model overrides dict
+        conversation_history: Optional conversation history for chat-style requests
+        on_chunk: Callable invoked with each streamed text chunk
+        on_finish: Callable invoked after the worker finishes successfully
+        on_token_limit: Callable invoked with error text when token limit exceeded
+        on_cleanup: Callable invoked after cleanup is performed
+        set_worker_callback: Optional callable to assign/store the worker
+
     Returns:
-        bool: True if prompt was sent successfully, False otherwise
+        LLMWorker: The started worker instance
     """
-    # Validation
-    # if not user_input:
-    #     QMessageBox.warning(controller, _("LLM Prompt"), _("Please enter some action beats before sending."))
-    #     return False
-        
+
+    stop_llm_worker(controller)
+
+    worker = LLMWorker(prompt, overrides or {}, conversation_history)
+
+    if set_worker_callback:
+        set_worker_callback(worker)
+    else:
+        _default_set_worker(controller, worker)
+
+    if on_chunk:
+        worker.data_received.connect(on_chunk)
+    elif hasattr(controller, "update_text"):
+        worker.data_received.connect(controller.update_text)
+
+    if on_token_limit and hasattr(worker, "token_limit_exceeded"):
+        worker.token_limit_exceeded.connect(on_token_limit)
+    elif hasattr(controller, "handle_token_limit_error"):
+        worker.token_limit_exceeded.connect(controller.handle_token_limit_error)
+
+    cleanup_fn = cleanup_handler or (lambda ctrl: cleanup_llm_worker(ctrl))
+
+    def _finish_wrapper():
+        try:
+            if on_finish:
+                on_finish()
+            elif hasattr(controller, "on_finished"):
+                controller.on_finished()
+        finally:
+            cleanup_fn(controller)
+            if on_cleanup:
+                on_cleanup()
+
+    worker.finished.connect(_finish_wrapper)
+
+    worker.start()
+    return worker
+
+
+def send_prompt_with_ui_integration(
+    controller,
+    prompt_config,
+    user_input,
+    additional_vars=None,
+    current_scene_text=None,
+    extra_context=None,
+    overrides=None,
+):
+    """Send a prompt to the LLM with full UI integration."""
+
     if not prompt_config:
         QMessageBox.warning(controller, _("LLM Prompt"), _("Please select a prompt."))
         return False
-    
-    # Assemble the final prompt
+
     final_prompt = prompt_handler.assemble_final_prompt(
         prompt_config, user_input, additional_vars, current_scene_text, extra_context
     )
-    
-    # UI state management
-    if hasattr(controller, 'right_stack'):
-        controller.right_stack.preview_text.clear()
+
+    preview_text = None
+    if hasattr(controller, "right_stack"):
+        preview_text = controller.right_stack.preview_text
+        preview_text.clear()
         controller.right_stack.send_button.setEnabled(False)
-        controller.right_stack.preview_text.setReadOnly(True)
-    
+        preview_text.setReadOnly(True)
+
     QApplication.processEvents()
-    
-    # Stop any existing worker
-    stop_llm_worker(controller)
-    
-    # Create and start new worker
-    controller.worker = LLMWorker(final_prompt, overrides or {})
-    
-    # Connect signals - use helper functions if controller supports them
-    if hasattr(controller, 'update_text'):
-        controller.worker.data_received.connect(controller.update_text)
-    else:
-        controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.right_stack.preview_text))
-    
-    if hasattr(controller, 'on_finished'):
-        controller.worker.finished.connect(controller.on_finished)
-    else:
-        controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.right_stack.preview_text))
-    
-    # Always connect cleanup
-    controller.worker.finished.connect(lambda: cleanup_llm_worker(controller))
-    
-    # Connect token limit handler if it exists
-    if hasattr(controller, 'handle_token_limit_error'):
-        controller.worker.token_limit_exceeded.connect(controller.handle_token_limit_error)
-    
-    controller.worker.start()
-    
+
+    def _on_chunk(text):
+        if hasattr(controller, "update_text"):
+            controller.update_text(text)
+        elif preview_text is not None:
+            update_llm_text(text, preview_text)
+
+    def _on_finish():
+        if hasattr(controller, "on_finished"):
+            controller.on_finished()
+        elif preview_text is not None:
+            handle_llm_completion(controller, preview_text)
+
+    def _on_cleanup():
+        if preview_text is not None and hasattr(controller, "right_stack"):
+            controller.right_stack.send_button.setEnabled(True)
+            preview_text.setReadOnly(False)
+
+    start_llm_stream(
+        controller,
+        prompt=final_prompt,
+        overrides=overrides or {},
+        on_chunk=_on_chunk,
+        on_finish=_on_finish,
+        on_cleanup=_on_cleanup,
+    )
+
     return True
 
 
@@ -216,36 +276,31 @@ def update_llm_text(text, preview_text_widget):
 
 
 def retry_llm_with_content(controller, prompt_config, user_input, additional_vars, content, extra_context=None):
-    """
-    Retry LLM request with different content (e.g., summary instead of full text).
-    
-    Args:
-        controller: The controller object
-        prompt_config: The prompt configuration
-        user_input: User input text
-        additional_vars: Additional variables
-        content: Replacement content (e.g., summary)
-        extra_context: Extra context
-    """
+    """Retry LLM request with different content (e.g., summary instead of full text)."""
+
     final_prompt = prompt_handler.assemble_final_prompt(
         prompt_config.get("text") if isinstance(prompt_config, dict) else prompt_config,
-        user_input, additional_vars, content, extra_context
+        user_input,
+        additional_vars,
+        content,
+        extra_context,
     )
-    
-    if hasattr(controller, 'right_stack'):
-        controller.right_stack.preview_text.clear()
-        controller.right_stack.preview_text.setReadOnly(True)
-    
-    controller.worker = LLMWorker(final_prompt, prompt_config)
-    controller.worker.data_received.connect(lambda text: update_llm_text(text, controller.right_stack.preview_text))
-    controller.worker.finished.connect(lambda: handle_llm_completion(controller, controller.right_stack.preview_text))
-    controller.worker.finished.connect(lambda: cleanup_llm_worker(controller))
-    
-    # Connect token limit handler if it exists
-    if hasattr(controller, 'show_token_limit_dialog'):
+
+    preview_text = getattr(controller.right_stack, "preview_text", None) if hasattr(controller, "right_stack") else None
+    if preview_text is not None:
+        preview_text.clear()
+        preview_text.setReadOnly(True)
+
+    start_llm_stream(
+        controller,
+        prompt=final_prompt,
+        overrides=prompt_config if isinstance(prompt_config, dict) else {},
+        on_chunk=(lambda text: update_llm_text(text, preview_text)) if preview_text is not None else None,
+        on_finish=(lambda: handle_llm_completion(controller, preview_text)) if preview_text is not None else None,
+    )
+
+    if hasattr(controller, "show_token_limit_dialog") and hasattr(controller, "worker") and controller.worker:
         controller.worker.token_limit_exceeded.connect(controller.show_token_limit_dialog)
-    
-    controller.worker.start()
 
 
 def get_truncated_text(full_text, max_tokens_ratio=0.5):

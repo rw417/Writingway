@@ -23,7 +23,7 @@ from muse.prompt_handler import assemble_final_prompt
 from settings.settings_manager import WWSettingsManager
 from settings.theme_manager import ThemeManager
 from settings.llm_api_aggregator import WWApiAggregator
-from settings.llm_worker import LLMWorker
+from util.llm_helpers import start_llm_stream
 from settings.autosave_manager import load_latest_autosave
 from .chat_models import ChatMessage, clone_history_until, deserialize_messages, serialize_messages
 from .chat_widgets import ChatListWidget
@@ -63,6 +63,7 @@ class WorkshopWindow(QDialog):
         self._is_initial_load = False  # Flag to prevent saving during initial load
         self.is_streaming = False  # Track streaming state
         self.worker = None  # LLMWorker instance
+        self._worker_cleanup_handler = lambda ctrl: ctrl.cleanup_worker()
         self.pending_user_message_id = None
         self.streaming_message_id = None
         self.compendium_match_service = getattr(parent, "compendium_match_service", None)
@@ -511,6 +512,19 @@ class WorkshopWindow(QDialog):
             self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg"))
             self.send_message()
 
+    def _start_streaming_worker(self, overrides, conversation_history):
+        """Helper to spin up a streaming worker with Workshop callbacks."""
+        return start_llm_stream(
+            self,
+            prompt="",
+            overrides=overrides,
+            conversation_history=conversation_history,
+            on_chunk=self.append_streamed_response,
+            on_finish=self.on_streaming_finished,
+            on_token_limit=self.handle_token_limit_error,
+            cleanup_handler=self._worker_cleanup_handler,
+        )
+
     def send_message(self):
         """Send a message to the LLM using streaming and update chat bubbles."""
         user_message = self.chat_input.toPlainText().strip()
@@ -557,11 +571,7 @@ class WorkshopWindow(QDialog):
             self.previous_variant_index = None
             self.streaming_variant_id = assistant_entry.active_variant.id
 
-            self.worker = LLMWorker("", overrides=overrides_for_worker, conversation_history=conversation_payload)
-            self.worker.data_received.connect(self.append_streamed_response)
-            self.worker.finished.connect(self.on_streaming_finished)
-            self.worker.token_limit_exceeded.connect(self.handle_token_limit_error)
-            self.worker.start()
+            self.worker = self._start_streaming_worker(overrides_for_worker, conversation_payload)
         except Exception as e:
             logging.error(f"Failed to start streaming: {e}", exc_info=True)
             QMessageBox.warning(self, _("Error"), _("Failed to generate response: {}").format(str(e)))
@@ -595,7 +605,6 @@ class WorkshopWindow(QDialog):
             id(self.worker) if self.worker else None,
             WWApiAggregator.interrupt_flag.is_set()
         )
-        self.cleanup_worker()
         self.finalize_streaming_message(save=True)
         self.is_streaming = False
         self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
@@ -775,14 +784,10 @@ class WorkshopWindow(QDialog):
             self.streaming_variant_id = new_variant.id
             self.chat_list.add_or_update_message(assistant_message, select=True)
 
-            self.worker = LLMWorker("", overrides=overrides_for_worker, conversation_history=payload)
-            self.worker.data_received.connect(self.append_streamed_response)
-            self.worker.finished.connect(self.on_streaming_finished)
-            self.worker.token_limit_exceeded.connect(self.handle_token_limit_error)
+            self.worker = self._start_streaming_worker(overrides_for_worker, payload)
 
             self.is_streaming = True
             self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg"))
-            self.worker.start()
         except Exception as e:
             logging.error(f"Failed to start swipe regeneration: {e}", exc_info=True)
             QMessageBox.warning(self, _("Error"), _("Failed to regenerate response: {}").format(str(e)))
