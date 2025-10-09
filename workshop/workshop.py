@@ -141,6 +141,12 @@ class WorkshopWindow(QDialog):
         self.conversation_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.conversation_list.customContextMenuRequested.connect(self.show_conversation_context_menu)
         self.conversation_list.itemSelectionChanged.connect(self.on_conversation_selection_changed)
+        # Prefer per-pixel scrolling and a smaller scrollbar single step for smoother wheel behavior
+        try:
+            self.conversation_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+            self.conversation_list.verticalScrollBar().setSingleStep(12)
+        except Exception:
+            pass
         conversation_layout.addWidget(self.conversation_list)
 
         new_chat_button = QPushButton(_("New Chat"))

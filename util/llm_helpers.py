@@ -11,6 +11,7 @@ import logging
 import threading
 import re
 import tiktoken
+from util.llm_markdown_to_html import markdown_to_html
 
 # gettext '_' fallback for static analysis / standalone edits
 if "_" not in globals():
@@ -253,11 +254,17 @@ def handle_llm_completion(controller, preview_text_widget):
         QMessageBox.warning(controller, _("LLM Response"), _("The LLM did not return any text. Possible token limit reached or an error occurred."))
         return
     
-    # Format markdown-style text
-    formatted_text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", raw_text)
-    formatted_text = re.sub(r"\*(.*?)\*", r"<i>\1</i>", formatted_text)
-    formatted_text = formatted_text.replace("\n", "<br>")
-    preview_text_widget.setHtml(formatted_text)
+    # Use the markdown_to_html helper to convert LLM markdown-like output
+    try:
+        formatted_text = markdown_to_html(raw_text)
+        preview_text_widget.setHtml(formatted_text)
+    except Exception as e:
+        logging.debug(f"markdown_to_html failed: {e}", exc_info=True)
+        # Fallback: keep the simple transformation used previously
+        formatted_text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", raw_text)
+        formatted_text = re.sub(r"\*(.*?)\*", r"<i>\1</i>", formatted_text)
+        formatted_text = formatted_text.replace("\n", "<br>")
+        preview_text_widget.setHtml(formatted_text)
     logging.debug(f"Active threads: {threading.enumerate()}")
 
 
@@ -273,6 +280,19 @@ def update_llm_text(text, preview_text_widget):
     cursor.movePosition(QTextCursor.End)
     preview_text_widget.setTextCursor(cursor)
     preview_text_widget.insertPlainText(text)
+
+    # Try progressively rendering the accumulated plain text as HTML so the
+    # preview shows formatted markdown while streaming. If rendering fails,
+    # leave the plain text (this keeps streaming robust).
+    try:
+        html = markdown_to_html(preview_text_widget.toPlainText())
+        preview_text_widget.setHtml(html)
+        # Ensure cursor is at the end after replacing with HTML
+        cursor = preview_text_widget.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        preview_text_widget.setTextCursor(cursor)
+    except Exception as e:
+        logging.debug(f"Progressive markdown_to_html failed: {e}", exc_info=True)
 
 
 def retry_llm_with_content(controller, prompt_config, user_input, additional_vars, content, extra_context=None):

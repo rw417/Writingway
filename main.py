@@ -49,6 +49,7 @@ from PyQt5.QtWidgets import QApplication
 from workbench import WorkbenchWindow
 from settings.theme_manager import ThemeManager
 from util.cursor_manager import install_cursor_manager
+from util.scroll_manager import install_scroll_manager
 
 if TYPE_CHECKING:
     from gettext import gettext as _
@@ -88,6 +89,11 @@ def main():
         pass
     app = QApplication(sys.argv)
     install_cursor_manager(app)
+    # Install global scroll manager to control wheel scroll speed application-wide
+    try:
+        install_scroll_manager(app, scale=1)  # smaller scale => slower scroll
+    except Exception:
+        pass
     writingway_preload_settings(app)
     window = WorkbenchWindow(translation_manager)
     window.show()

@@ -57,6 +57,12 @@ class PreviewEditableWidget(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
         self.tree.setRootIsDecorated(False)
+        # Prefer per-pixel scrolling and a smaller single-step to avoid per-item jumps
+        try:
+            self.tree.setVerticalScrollMode(QTreeWidget.ScrollPerPixel)
+            self.tree.verticalScrollBar().setSingleStep(12)
+        except Exception:
+            pass
         layout.addWidget(self.tree)
 
         self.add_message_button = QPushButton(_("Add Message"))
@@ -129,6 +135,11 @@ class PreviewEditableWidget(QWidget):
             text_edit = QTextEdit()
             text_edit.setPlainText(content)
             text_edit.setMinimumHeight(100)
+            # Reduce child text edits' scrollbar single-step for smoother wheel scrolling
+            try:
+                text_edit.verticalScrollBar().setSingleStep(12)
+            except Exception:
+                pass
             text_edit.textChanged.connect(partial(self.on_content_edited, i))
             container_layout.addWidget(text_edit)
 

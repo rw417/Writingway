@@ -129,6 +129,12 @@ class RightStack(QWidget):
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setPlaceholderText(_("LLM output preview will appear here..."))
+        # Prefer pixel scrolling and a smaller single-step for smoother wheel behavior
+        try:
+            sb = self.preview_text.verticalScrollBar()
+            sb.setSingleStep(12)  # pixels per small wheel increment; tune 8-20 as needed
+        except Exception:
+            pass
         self.preview_stack.addWidget(self.preview_text)
         
         # 2. Tabbed widget for tweaks and editable preview

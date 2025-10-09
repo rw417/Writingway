@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, Optional
 import html
 import re
+from util.llm_markdown_to_html import markdown_to_html
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPaintEvent
@@ -209,11 +210,16 @@ class ChatBubbleWidget(QWidget):
         if not text:
             return "&nbsp;"
 
-        escaped = html.escape(text)
-        escaped = escaped.replace("\n", "<br/>")
-        bolded = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
-        italicized = re.sub(r"\*(.+?)\*", r"<i>\1</i>", bolded)
-        return italicized
+        # Prefer the robust markdown_to_html converter; fall back to a
+        # minimal escaping + bold/italic handling if it fails for any reason.
+        try:
+            return markdown_to_html(text)
+        except Exception:
+            escaped = html.escape(text)
+            escaped = escaped.replace("\n", "<br/>")
+            bolded = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+            italicized = re.sub(r"\*(.+?)\*\*", r"<i>\1</i>", bolded)
+            return italicized
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -248,6 +254,11 @@ class ChatListWidget(QListWidget):
         self.setSpacing(4)
         self.setAlternatingRowColors(False)
         self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        # Tweak the scrollbar single-step so each wheel 'step' moves fewer pixels
+        try:
+            self.verticalScrollBar().setSingleStep(12)
+        except Exception:
+            pass
 
     def _on_selection_changed(self):
         selected = self.selectedItems()

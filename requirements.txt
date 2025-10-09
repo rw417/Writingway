@@ -34,3 +34,5 @@ spylls
 ebooklib
 beautifulsoup4
 python-docx
+markdown>=3.4
+pygments
