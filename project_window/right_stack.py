@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QStackedWidget, QHBoxLayout, QPushButton, 
                             QTextEdit, QComboBox, QSizePolicy,
-                            QFormLayout, QSplitter, QCheckBox, QLineEdit, QLabel, QTabWidget)
+                            QFormLayout, QSplitter, QCheckBox, QLineEdit, QLabel, QTabWidget, QTabBar)
+from PyQt5.QtGui import QPainter
+from PyQt5.QtCore import QSize
+from PyQt5.QtWidgets import QStyle, QStyleOptionTab
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QVariant
 from settings.theme_manager import ThemeManager
@@ -18,10 +21,7 @@ from project_window.preview_uneditable_widget import PreviewUneditableWidget
 from copy import deepcopy
 
 # gettext '_' fallback for static analysis / standalone edits
-try:
-    _
-except NameError:
-    _ = lambda s: s
+_ = globals().get('_', lambda s: s)
 
 class RightStack(QWidget):
     """Stacked widget for summary and LLM panels."""
@@ -233,9 +233,9 @@ class RightStack(QWidget):
         
         left_layout.addLayout(top_buttons_layout)
 
-        # Bottom row with prompt selector and dropdowns
+        # Bottom row with prompt selector (dropdowns moved to top control box)
         bottom_row_layout = QHBoxLayout()
-        
+
         self.prose_prompt_panel = PromptPanel("Prose")
         self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         self.prose_prompt_panel.setMaximumWidth(300)
@@ -244,30 +244,147 @@ class RightStack(QWidget):
         bottom_row_layout.addWidget(self.prose_prompt_panel)
 
         bottom_row_layout.addStretch()
-        
-        pulldown_widget = QWidget()
-        pulldown_layout = QFormLayout(pulldown_widget)
-        pulldown_layout.setContentsMargins(0, 0, 20, 0)
-        pulldown_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-
-        self.pov_combo = self.add_combo(pulldown_layout, _("POV"), [_("First Person"), _("Third Person Limited"), _("Omniscient"), _("Custom...")], self.controller.handle_pov_change)
-        self.pov_character_combo = self.add_combo(pulldown_layout, _("POV Character"), ["Alice", "Bob", "Charlie", _("Custom...")], self.controller.handle_pov_character_change)
-        self.tense_combo = self.add_combo(pulldown_layout, _("Tense"), [_("Past Tense"), _("Present Tense"), _("Custom...")], self.controller.handle_tense_change)
-        bottom_row_layout.addWidget(pulldown_widget)
 
         left_layout.addLayout(bottom_row_layout)
-        
+
         # Context panel below the buttons and dropdowns
         self.context_panel = ContextPanel(self.model.structure, self.model.project_name, self.controller, enhanced_window=self.controller.enhanced_window)
         self.context_panel.setVisible(False)
         left_layout.addWidget(self.context_panel)
 
+        # --- New top control box: place above left_container in the action_layout ---
+        # The top part contains the POV/POV Character/Tense combos (horizontally) and a scene summary text box.
+        top_control_container = QWidget()
+        top_control_layout = QVBoxLayout(top_control_container)
+        top_control_layout.setContentsMargins(0, 0, 0, 0)
+
+        top_row = QWidget()
+        top_row_layout = QHBoxLayout(top_row)
+        top_row_layout.setContentsMargins(0, 0, 0, 0)
+
+    # Move POV/POV Character/Tense to the top row as small widgets with left-side labels
+        self.pov_combo = QComboBox()
+        self.pov_combo.addItems([_("1st Person"), _("2nd Person"), _("3rd Person Limited"), _("3rd Person Omniscient"), _("Custom...")])
+        self.pov_combo.currentIndexChanged.connect(self.controller.handle_pov_change)
+
+        self.pov_character_combo = QComboBox()
+        self.pov_character_combo.addItems(["Alice", "Bob", "Charlie", _("Custom...")])
+        self.pov_character_combo.currentIndexChanged.connect(self.controller.handle_pov_character_change)
+
+        self.tense_combo = QComboBox()
+        self.tense_combo.addItems([_("Past Tense"), _("Present Tense"), _("Custom...")])
+        self.tense_combo.currentIndexChanged.connect(self.controller.handle_tense_change)
+
+        # Build compact horizontal widgets where the label sits to the left of each combo
+        pov_widget = QWidget()
+        pov_widget_layout = QHBoxLayout(pov_widget)
+        pov_widget_layout.setContentsMargins(0, 0, 0, 0)
+        pov_widget_layout.addWidget(QLabel(_("POV: ")))
+        pov_widget_layout.addWidget(self.pov_combo)
+        pov_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        pov_char_widget = QWidget()
+        pov_char_widget_layout = QHBoxLayout(pov_char_widget)
+        pov_char_widget_layout.setContentsMargins(0, 0, 0, 0)
+        pov_char_widget_layout.addWidget(QLabel(_("of: ")))
+        pov_char_widget_layout.addWidget(self.pov_character_combo)
+        pov_char_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        tense_widget = QWidget()
+        tense_widget_layout = QHBoxLayout(tense_widget)
+        tense_widget_layout.setContentsMargins(0, 0, 0, 0)
+        tense_widget_layout.addWidget(QLabel(_("using: ")))
+        tense_widget_layout.addWidget(self.tense_combo)
+        tense_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        # Clear any existing children of top_row_layout and add the compact labeled widgets
+        for i in reversed(range(top_row_layout.count())):
+            item = top_row_layout.itemAt(i)
+            if item:
+                w = item.widget()
+                if w:
+                    top_row_layout.removeWidget(w)
+                    w.setParent(None)
+
+        top_row_layout.addWidget(pov_widget)
+        top_row_layout.addWidget(pov_char_widget)
+        top_row_layout.addWidget(tense_widget)
+        top_row_layout.addStretch()
+        top_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        # Scene summary text box below the combos; prefer expanding vertically so it can
+        # take the maximum allowed height within the capped top container
+        self.scene_summary_edit = QTextEdit()
+        self.scene_summary_edit.setPlaceholderText(_("Enter a short scene summary..."))
+        # Keep a reasonable minimum but allow expansion to fill available space
+        self.scene_summary_edit.setMinimumHeight(80)
+        self.scene_summary_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        top_control_layout.addWidget(top_row)
+        top_control_layout.addWidget(self.scene_summary_edit)
+
+        # Expose top control container on the instance for dynamic sizing
+        self.top_control_container = top_control_container
+        # Use minimal vertical space but cap height; prefer Minimum vertical policy so it doesn't expand
+        self.top_control_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        # Limit by default to 450px; we'll dynamically set the height to min(450, 30% of widget height)
+        self.top_control_container.setMaximumHeight(450)
+
+        # Place the top_control_container above the preview stack so it's the top box
+        layout.addWidget(self.top_control_container)
+
+        # Create a left-tabbed widget and place the main LLM UI on the first tab.
+        # We'll use a custom QTabBar to draw vertical tab text.
+        class VerticalTabBar(QTabBar):
+            def tabSizeHint(self, index):
+                s = super().tabSizeHint(index)
+                # Make tabs taller so rotated text fits
+                return QSize(30, max(100, s.height()))
+
+            def paintEvent(self, event):
+                painter = QPainter(self)
+                for i in range(self.count()):
+                    # draw tab base using the style
+                    style = self.style()
+                    opt2 = QStyleOptionTab()
+                    self.initStyleOption(opt2, i)
+                    style.drawControl(QStyle.CE_TabBarTabShape, opt2, painter, self)
+
+                    # draw rotated text
+                    painter.save()
+                    rect = self.tabRect(i)
+                    cx = rect.x() + rect.width() / 2
+                    cy = rect.y() + rect.height() / 2
+                    painter.translate(int(cx), int(cy))
+                    painter.rotate(-90)
+                    text = opt2.text
+                    fm = painter.fontMetrics()
+                    # PyQt5: use horizontalAdvance when available
+                    tw = fm.horizontalAdvance(text) if hasattr(fm, 'horizontalAdvance') else fm.width(text)
+                    th = fm.height()
+                    # drawText expects ints; convert positions to int
+                    painter.drawText(int(-tw / 2), int(th / 4), text)
+                    painter.restore()
+
+        tab_widget = QTabWidget()
+        tab_widget.setTabPosition(QTabWidget.West)
+        tab_widget.setTabBar(VerticalTabBar())
+
+        # Build the main tab containing the existing preview and action layout
+        main_tab = QWidget()
+        main_tab_layout = QVBoxLayout(main_tab)
+        main_tab_layout.setContentsMargins(0, 0, 0, 0)
+        # Add the existing widgets/layouts into the main tab
+        main_tab_layout.addWidget(self.preview_stack)
+        main_tab_layout.addLayout(preview_buttons)
+        # left_container already contains prompt input, buttons, prose panel, context
         left_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         action_layout.addWidget(left_container)
+        main_tab_layout.addLayout(action_layout)
 
-        layout.addWidget(self.preview_stack)  # Changed from self.preview_text
-        layout.addLayout(preview_buttons)
-        layout.addLayout(action_layout)
+        tab_widget.addTab(main_tab, _("Write"))
+
+        layout.addWidget(tab_widget)
 
         self._apply_toggle_highlight_style()
         return panel
@@ -312,6 +429,25 @@ class RightStack(QWidget):
                        getattr(self, 'context_toggle_button', None)):
             if button and button.isCheckable():
                 button.setStyleSheet(highlight_style)
+
+    def update_top_control_height(self):
+        """Update the height of the top control container to the smaller of 450px or 30% of this widget's height."""
+        try:
+            if not hasattr(self, 'top_control_container') or not self.top_control_container:
+                return
+            total_h = self.height()
+            cap_by_percent = int(total_h * 0.30)
+            target = min(450, cap_by_percent)
+            # Ensure at least a small visible height
+            target = max(80, target)
+            self.top_control_container.setMaximumHeight(target)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        # Update top control height on resize and pass the event up
+        self.update_top_control_height()
+        super().resizeEvent(event)
 
     def update_tint(self, tint_color):
         self.tint_color = tint_color

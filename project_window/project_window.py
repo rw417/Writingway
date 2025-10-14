@@ -111,6 +111,10 @@ class ProjectWindow(QMainWindow):
     def __init__(self, project_name, compendium_window):
         super().__init__()
         self.model = ProjectModel(project_name)
+        # Store last cursor state (position and selection) for scene editor
+        self._scene_editor_last_cursor = None
+        # Hold reference to the extra selection used for visual highlight
+        self._saved_extra_selection = None
         self.current_theme = WWSettingsManager.get_appearance_settings()["theme"]
         self.icon_tint = QColor(ThemeManager.ICON_TINTS.get(self.current_theme, "black"))
         self.tts_playing = False
@@ -122,6 +126,11 @@ class ProjectWindow(QMainWindow):
         self.read_settings()
         self.load_initial_state()
         self.enhanced_window.compendium_updated.connect(self.on_compendium_updated)
+
+        # Listen for global focus changes so we can save/restore cursor state
+        app = QApplication.instance()
+        if app:
+            app.focusChanged.connect(self._on_focus_changed_global)
 
         # Initialize the centralized variable manager
         self.variable_manager = initialize_variable_manager(self)
@@ -280,6 +289,198 @@ class ProjectWindow(QMainWindow):
         self.focus_mode_shortcut = QShortcut(QKeySequence("F11"), self)
         self.focus_mode_shortcut.activated.connect(self.open_focus_mode)
         self.right_stack.summary_controller.progress_updated.connect(self.right_stack._update_progress)
+        # Also ensure we restore cursor when editor gains focus
+        # (in case focusChanged didn't fire for some reason)
+        try:
+            self.scene_editor.editor.focusInEvent = self._wrap_focus_in(self.scene_editor.editor.focusInEvent)
+            self.scene_editor.editor.focusOutEvent = self._wrap_focus_out(self.scene_editor.editor.focusOutEvent)
+        except Exception:
+            pass
+
+    def _wrap_focus_in(self, original_focus_in):
+        def new_focus_in(event):
+            # Call original handler first
+            try:
+                original_focus_in(event)
+            except Exception:
+                pass
+            # Clear any saved highlight immediately when editor gains focus
+            try:
+                self._clear_saved_cursor_highlight()
+            except Exception:
+                pass
+            self._restore_scene_editor_cursor()
+        return new_focus_in
+
+    def _wrap_focus_out(self, original_focus_out):
+        def new_focus_out(event):
+            try:
+                original_focus_out(event)
+            except Exception:
+                pass
+            self._save_scene_editor_cursor()
+        return new_focus_out
+
+    def _on_focus_changed_global(self, old, now):
+        """Global focus change handler. Save cursor when scene editor loses focus
+        and restore when it gains focus."""
+        try:
+            editor = getattr(self, 'scene_editor', None)
+            if not editor:
+                return
+            widget = editor.editor
+            # If previous focused widget was the scene editor, save its cursor
+            if old is widget:
+                self._save_scene_editor_cursor()
+            # If newly focused widget is the scene editor, restore its cursor
+            if now is widget:
+                # Delay slightly to ensure focus state is fully set
+                # Clear highlight immediately and restore cursor shortly after
+                QTimer.singleShot(0, self._clear_saved_cursor_highlight)
+                QTimer.singleShot(0, self._restore_scene_editor_cursor)
+        except Exception:
+            pass
+
+    def _save_scene_editor_cursor(self):
+        """Save the current QTextCursor state from the scene editor."""
+        try:
+            editor = getattr(self, 'scene_editor', None)
+            if not editor:
+                return
+            cursor = editor.editor.textCursor()
+            # Store position, anchor, and whether selection exists
+            self._scene_editor_last_cursor = {
+                'position': cursor.position(),
+                'anchor': cursor.anchor(),
+                'hasSelection': cursor.hasSelection()
+            }
+            # Show a visual marker for the saved position while editor is unfocused
+            QTimer.singleShot(0, self._show_saved_cursor_highlight)
+        except Exception:
+            self._scene_editor_last_cursor = None
+
+    def _restore_scene_editor_cursor(self):
+        """Restore previously saved QTextCursor state to the scene editor."""
+        try:
+            if not hasattr(self, '_scene_editor_last_cursor') or not self._scene_editor_last_cursor:
+                return
+            editor = getattr(self, 'scene_editor', None)
+            if not editor:
+                return
+            data = self._scene_editor_last_cursor
+            current_cursor = editor.editor.textCursor()
+            # If the user already placed the caret (e.g. by clicking), don't override it.
+            try:
+                user_pos = current_cursor.position()
+                user_anchor = current_cursor.anchor()
+                user_has_sel = current_cursor.hasSelection()
+            except Exception:
+                user_pos = None
+                user_anchor = None
+                user_has_sel = None
+
+            saved_pos = data.get('position', 0)
+            saved_anchor = data.get('anchor', saved_pos)
+            saved_has_sel = data.get('hasSelection', False)
+
+            # If current cursor differs from saved cursor (likely a user click), skip restoring
+            if (user_pos is not None) and (
+                user_pos != saved_pos or user_has_sel != saved_has_sel or (user_has_sel and user_anchor != saved_anchor)
+            ):
+                # Clear any visual marker but leave caret where the user placed it
+                QTimer.singleShot(0, self._clear_saved_cursor_highlight)
+                return
+
+            # Otherwise, restore the saved cursor/selection
+            cursor = editor.editor.textCursor()
+            if saved_has_sel:
+                cursor.setPosition(saved_anchor)
+                cursor.setPosition(saved_pos, QTextCursor.KeepAnchor)
+            else:
+                cursor.setPosition(saved_pos)
+                cursor.clearSelection()
+            editor.editor.setTextCursor(cursor)
+            # Clear any visual marker once the editor regains focus
+            QTimer.singleShot(0, self._clear_saved_cursor_highlight)
+        except Exception:
+            pass
+
+    def _show_saved_cursor_highlight(self):
+        """Create a temporary visual highlight at the saved cursor position using the theme accent color."""
+        try:
+            if not getattr(self, '_scene_editor_last_cursor', None):
+                return
+            editor_wrapper = getattr(self, 'scene_editor', None)
+            if not editor_wrapper:
+                return
+            editor = editor_wrapper.editor
+            data = self._scene_editor_last_cursor
+            doc = editor.document()
+            pos = data.get('position', 0)
+            # If position is at end, pick previous character if possible
+            max_pos = max(0, doc.characterCount() - 1)
+            start = pos if pos < max_pos else max(0, max_pos - 1)
+
+            cursor = editor.textCursor()
+            cursor.setPosition(start)
+            cursor.setPosition(start + 1, QTextCursor.KeepAnchor)
+
+            sel = QTextEdit.ExtraSelection()
+            fmt = QTextCharFormat()
+            # Use the theme accent color for the highlight
+            palette = ThemeManager.get_theme_palette(self.current_theme)
+            accent = palette.get('accent', '#0078d4')
+            color = QColor(accent)
+            color.setAlpha(160)
+            fmt.setBackground(color)
+            sel.format = fmt
+            sel.cursor = cursor
+            extras = editor.extraSelections()
+            extras.append(sel)
+            editor.setExtraSelections(extras)
+            self._saved_extra_selection = sel
+            # Store the concrete selection range so we can reliably remove it later
+            try:
+                start = sel.cursor.selectionStart()
+                end = sel.cursor.selectionEnd()
+                self._saved_extra_range = (start, end)
+            except Exception:
+                self._saved_extra_range = None
+        except Exception:
+            pass
+
+    def _clear_saved_cursor_highlight(self):
+        """Remove the temporary visual highlight if present."""
+        try:
+            editor_wrapper = getattr(self, 'scene_editor', None)
+            if not editor_wrapper:
+                self._saved_extra_selection = None
+                self._saved_extra_range = None
+                return
+            editor = editor_wrapper.editor
+            extras = editor.extraSelections()
+            # If we have a stored range, remove extras that match that range
+            if getattr(self, '_saved_extra_range', None):
+                s_start, s_end = self._saved_extra_range
+                new_extras = []
+                for e in extras:
+                    try:
+                        c = e.cursor
+                        if c.selectionStart() == s_start and c.selectionEnd() == s_end:
+                            continue
+                    except Exception:
+                        pass
+                    new_extras.append(e)
+                editor.setExtraSelections(new_extras)
+            else:
+                # Fallback: remove by identity if present
+                extras = [e for e in extras if e is not getattr(self, '_saved_extra_selection', None)]
+                editor.setExtraSelections(extras)
+        except Exception:
+            pass
+        finally:
+            self._saved_extra_selection = None
+            self._saved_extra_range = None
 
     def handle_pov_character_change(self, index=0):
         value = self.right_stack.pov_character_combo.currentText()
