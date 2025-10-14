@@ -13,6 +13,8 @@ class PromptVariableManager:
     
     def __init__(self):
         self._collectors = {}
+        # collectors that accept parameters: name -> callable(*args, **kwargs)
+        self._param_collectors = {}
         self._register_default_collectors()
     
     def register_collector(self, variable_name: str, collector_func: Callable[[], str]):
@@ -34,6 +36,28 @@ class PromptVariableManager:
                 print(f"Error collecting variable '{name}': {e}")
                 variables[name] = ""
         return variables
+
+    def register_param_collector(self, variable_name: str, collector_func: Callable[..., str]):
+        """Register a function that accepts parameters for a variable like wordsBefore(200, True)."""
+        self._param_collectors[variable_name] = collector_func
+
+    def unregister_param_collector(self, variable_name: str):
+        self._param_collectors.pop(variable_name, None)
+
+    def evaluate_param_variable(self, variable_name: str, args: list):
+        """Evaluate a parameterized variable by name with a list of positional args.
+
+        Returns string result or raises if not found.
+        """
+        func = self._param_collectors.get(variable_name)
+        if not func:
+            raise KeyError(variable_name)
+        try:
+            # Call the collector with positional args
+            return str(func(*args))
+        except Exception as e:
+            print(f"Error evaluating parameterized variable '{variable_name}': {e}")
+            return ""
     
     def get_variable(self, name: str) -> str:
         """Get the current value of a specific variable."""
@@ -68,6 +92,9 @@ class ProjectVariableManager(PromptVariableManager):
     def __init__(self, project_window=None):
         super().__init__()
         self.project_window = project_window
+        # Expose this instance as the global variable manager for convenience
+        global variable_manager
+        variable_manager = self
         if project_window:
             self.setup_ui_collectors(project_window)
     
@@ -137,6 +164,92 @@ class ProjectVariableManager(PromptVariableManager):
         # User input (will be set dynamically when sending prompts)
         self._user_input_value = ""
         self.register_collector('user_input', lambda: self._user_input_value)
+
+        # Parameterized collectors: wordsBefore and wordsAfter
+        def words_before_collector(words: int = 200, fullSentence: bool = True):
+            editor = getattr(project_window.scene_editor, 'editor', None)
+            if not editor:
+                return ""
+            try:
+                import re
+                text = editor.toPlainText()
+                cursor = editor.textCursor()
+                if cursor.hasSelection():
+                    sel_start = min(cursor.selectionStart(), cursor.selectionEnd())
+                    end_pos = sel_start
+                else:
+                    end_pos = cursor.position()
+
+                # Find word spans
+                words_spans = [m.span() for m in re.finditer(r"\b\w+\b", text)]
+                # Collect words that end before end_pos
+                candidate = [s for s in words_spans if s[1] <= end_pos]
+                if not candidate:
+                    return ""
+                selected = candidate[-words:] if len(candidate) >= words else candidate
+                start_index = selected[0][0]
+                extracted = text[start_index:end_pos]
+
+                if fullSentence:
+                    # If the character before start_index exists and is not a sentence end,
+                    # then the first sentence in extracted may be partial. Drop it.
+                    if start_index > 0 and text[start_index-1] not in '.!?':
+                        # Split into sentences and drop the first (partial) sentence
+                        parts = re.split(r'(?<=[.!?])\s+', extracted)
+                        if len(parts) > 1:
+                            extracted = '\n'.join(parts[1:]).strip()
+                        else:
+                            # Nothing sensible remains
+                            extracted = ''
+
+                return extracted.strip()
+            except Exception as e:
+                print(f"Error in words_before_collector: {e}")
+                return ""
+
+        def words_after_collector(words: int = 200, fullSentence: bool = True):
+            editor = getattr(project_window.scene_editor, 'editor', None)
+            if not editor:
+                return ""
+            try:
+                import re
+                text = editor.toPlainText()
+                cursor = editor.textCursor()
+                if cursor.hasSelection():
+                    sel_end = max(cursor.selectionStart(), cursor.selectionEnd())
+                    start_pos = sel_end
+                else:
+                    start_pos = cursor.position()
+
+                # Find word spans
+                words_spans = [m.span() for m in re.finditer(r"\b\w+\b", text)]
+                # Collect words that start at or after start_pos
+                candidate = [s for s in words_spans if s[0] >= start_pos]
+                if not candidate:
+                    return ""
+                selected = candidate[:words] if len(candidate) >= words else candidate
+                end_index = selected[-1][1]
+                extracted = text[start_pos:end_index]
+
+                if fullSentence:
+                    # If the character after end_index exists and is not a sentence end,
+                    # then the last sentence in extracted may be partial. Drop it.
+                    if end_index < len(text) and text[end_index] not in '.!?':
+                        parts = re.split(r'(?<=[.!?])\s+', extracted)
+                        if len(parts) > 1:
+                            # Drop the last (partial) sentence
+                            extracted = '\n'.join(parts[:-1]).strip()
+                        else:
+                            extracted = ''
+
+                return extracted.strip()
+            except Exception as e:
+                print(f"Error in words_after_collector: {e}")
+                return ""
+
+        # Register parameterized collectors
+        self.register_param_collector('wordsBefore', words_before_collector)
+        self.register_param_collector('wordsAfter', words_after_collector)
     
     def set_user_input(self, user_input: str):
         """Set the user input value for prompt assembly."""
@@ -158,6 +271,48 @@ def initialize_variable_manager(project_window):
     global variable_manager
     variable_manager = ProjectVariableManager(project_window)
     return variable_manager
+
+
+def evaluate_variable_expression(expression: str) -> str:
+    """Evaluate an expression like 'wordsBefore(200, True)'.
+
+    If the global variable_manager has a param collector for the name, it will be called.
+    If no param collector exists, raises KeyError which callers should handle.
+    """
+    import re
+    # Parse name and args
+    m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)\s*$", expression)
+    if not m:
+        # Not an expression, try non-param collector
+        if variable_manager:
+            return variable_manager.get_variable(expression)
+        return ""
+
+    name = m.group(1)
+    args_str = m.group(2).strip()
+    args = []
+    if args_str:
+        # Simple args splitter that handles numbers, booleans, and quoted strings
+        parts = [p.strip() for p in re.split(r"(?<!\\),", args_str)]
+        for part in parts:
+            if re.match(r'^-?\d+$', part):
+                args.append(int(part))
+            elif part.lower() in ('true', 'false'):
+                args.append(part.lower() == 'true')
+            else:
+                # Strip surrounding quotes if present
+                if (part.startswith("\"") and part.endswith("\"")) or (part.startswith("'") and part.endswith("'")):
+                    args.append(part[1:-1])
+                else:
+                    args.append(part)
+
+    if not variable_manager:
+        return ""
+
+    try:
+        return variable_manager.evaluate_param_variable(name, args)
+    except KeyError:
+        raise
 
 def get_variable_manager() -> Optional[ProjectVariableManager]:
     """Get the current variable manager instance."""

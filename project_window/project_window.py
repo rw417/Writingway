@@ -132,6 +132,15 @@ class ProjectWindow(QMainWindow):
         if app:
             app.focusChanged.connect(self._on_focus_changed_global)
 
+        # Lightweight global click filter: clear editor focus when user clicks outside it
+        self._click_event_filter = None
+        try:
+            self._click_event_filter = self._make_click_filter()
+            if app and self._click_event_filter:
+                app.installEventFilter(self._click_event_filter)
+        except Exception:
+            self._click_event_filter = None
+
         # Initialize the centralized variable manager
         self.variable_manager = initialize_variable_manager(self)
         
@@ -636,6 +645,41 @@ class ProjectWindow(QMainWindow):
     def _persist_compendium_matches(self):
         if hasattr(self, "compendium_match_service"):
             self.compendium_match_service.save_matches()
+
+    def _make_click_filter(self):
+        from PyQt5.QtCore import QObject, QEvent
+
+        parent = self
+
+        class ClickFilter(QObject):
+            def eventFilter(self, obj, event):
+                try:
+                    # Only intercept mouse press events
+                    if event.type() == QEvent.MouseButtonPress:
+                        # Find the widget at the event position
+                        clicked_widget = QApplication.widgetAt(event.globalPos())
+                        # If there's no widget or it's not inside the scene editor, clear focus
+                        if not clicked_widget:
+                            if getattr(parent, 'scene_editor', None):
+                                parent.scene_editor.editor.clearFocus()
+                            return False
+                        # Walk up parent chain to see if editor is an ancestor
+                        w = clicked_widget
+                        is_inside = False
+                        while w is not None:
+                            if w is getattr(parent.scene_editor, 'editor', None):
+                                is_inside = True
+                                break
+                            w = w.parent()
+                        if not is_inside:
+                            # click outside the editor -> clear focus
+                            if getattr(parent, 'scene_editor', None):
+                                parent.scene_editor.editor.clearFocus()
+                    return False
+                except Exception:
+                    return False
+
+        return ClickFilter(self)
 
     def closeEvent(self, a0):
         if not self.check_unsaved_changes():

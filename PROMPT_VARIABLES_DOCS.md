@@ -23,6 +23,8 @@ The following variables are automatically available in all prompts:
 | `{wordCount}` | Word count of current scene | "1,247" |
 | `{additionalInstructions}` | Additional instructions from Tweaks tab | User's supplemental guidance |
 | `{outputWordCount}` | Target word count from Tweaks tab | "200" |
+| `{wordsBefore(n, fullSentence)}` | Text snippet of up to n words immediately before the cursor or selection; if fullSentence=True, trims a partial leading sentence | e.g. "...he opened the door." |
+| `{wordsAfter(n, fullSentence)}` | Text snippet of up to n words immediately after the cursor or selection; if fullSentence=True, trims a partial trailing sentence | e.g. "She walked into the room..." |
 
 ## Using Variables in Prompts
 
@@ -180,3 +182,26 @@ Input:  "Write in {pov} from {badVar}'s perspective using {tense}."
 Variables: {"pov": "Third Person", "tense": "Past Tense"}
 Result: "Write in Third Person from {ERROR: 'badVar' not found}'s perspective using Past Tense."
 ```
+
+## Advanced: Parameterized variables
+
+You can call parameterized variables using parentheses. Two helpers are available:
+
+- `{wordsBefore(n, fullSentence)}` — returns up to `n` words immediately before the current cursor position (or before the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text begins in the middle of a sentence, the partial first sentence will be dropped so the returned text starts at a sentence boundary.
+
+- `{wordsAfter(n, fullSentence)}` — returns up to `n` words immediately after the current cursor position (or after the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text ends in the middle of a sentence, the partial last sentence will be dropped so the returned text ends at a sentence boundary.
+
+Example:
+
+```
+Context before selection:
+{wordsBefore(100, True)}
+
+Context after selection:
+{wordsAfter(150, True)}
+```
+
+Notes:
+- If the editor or cursor is not available, these variables return an empty string.
+- If fewer than `n` words are available before/after, the full available text is returned (subject to sentence trimming).
+- The arguments may be integers or booleans (`True`/`False`).

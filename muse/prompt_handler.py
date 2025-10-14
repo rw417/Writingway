@@ -4,14 +4,12 @@ import os
 
 from langchain.prompts import PromptTemplate
 from settings.llm_api_aggregator import WWApiAggregator
-from .prompt_variables import get_prompt_variables, set_user_input
+from .prompt_variables import get_prompt_variables, set_user_input, evaluate_variable_expression
 
 DEFAULT_PROMPT_FALLBACK = "Write a story chapter based on the following user input"
 
 # gettext '_' fallback for static analysis / standalone edits
-try:
-    _
-except NameError:
+if '_' not in globals():
     _ = lambda s: s
 
 
@@ -49,14 +47,26 @@ def _safe_format_variables(content, variables):
     
     def replace_variable(match):
         var_name = match.group(1).strip()
-        if var_name in variables:
-            value = variables[var_name]
-            # Handle None values gracefully
-            return str(value) if value is not None else ""
-        else:
-            # Return a clear error message for missing variable
-            # Using a format that's easy to spot but doesn't break prompt flow
-            return f"{{ERROR: '{var_name}' not found}}"
+        # If variable looks like a function call (has parentheses), try evaluating
+        try:
+            if '(' in var_name and var_name.endswith(')'):
+                try:
+                    value = evaluate_variable_expression(var_name)
+                    return str(value) if value is not None else ""
+                except KeyError:
+                    return f"{{ERROR: '{var_name}' not found}}"
+
+            if var_name in variables:
+                value = variables[var_name]
+                # Handle None values gracefully
+                return str(value) if value is not None else ""
+            else:
+                # Return a clear error message for missing variable
+                # Using a format that's easy to spot but doesn't break prompt flow
+                return f"{{ERROR: '{var_name}' not found}}"
+        except Exception as e:
+            print(f"Error replacing variable '{var_name}': {e}")
+            return ""
     
     try:
         # Replace each variable individually
@@ -74,9 +84,7 @@ def _safe_format_variables(content, variables):
         return content
 
 
-try:
-    _
-except NameError:
+if '_' not in globals():
     _ = lambda s: s
 
 
