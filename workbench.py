@@ -330,6 +330,49 @@ class WorkbenchWindow(QMainWindow):
         theme_manager = ThemeManager()
         theme_manager.themeChanged.connect(self.on_theme_changed)
 
+    def shutdown(self):
+        """Attempt a graceful shutdown of open project windows and background workers."""
+        try:
+            # Close open project windows if any and stop their workers
+            for name, win in list(self.open_project_windows.items()):
+                try:
+                    if hasattr(win, 'worker') and win.worker:
+                        try:
+                            from util.llm_helpers import stop_llm_worker
+                            stop_llm_worker(win)
+                        except Exception:
+                            try:
+                                win.worker.stop()
+                            except Exception:
+                                pass
+                    # Stop autosave timers
+                    try:
+                        if hasattr(win, 'autosave_timer') and win.autosave_timer.isActive():
+                            win.autosave_timer.stop()
+                    except Exception:
+                        pass
+                    # Stop any TTS playing in the window
+                    try:
+                        from util.tts_manager import WW_TTSManager
+                        WW_TTSManager.stop()
+                    except Exception:
+                        pass
+                    # Ask window to close
+                    try:
+                        win.close()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            # Also hide the enhanced compendium if present
+            try:
+                if hasattr(self, 'enhanced_compendium') and self.enhanced_compendium:
+                    self.enhanced_compendium.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
 
     def init_ui(self):
         central_widget = QWidget()

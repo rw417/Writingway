@@ -50,6 +50,9 @@ from workbench import WorkbenchWindow
 from settings.theme_manager import ThemeManager
 from util.cursor_manager import install_cursor_manager
 from util.scroll_manager import install_scroll_manager
+from settings.llm_api_aggregator import WWApiAggregator
+from util.tts_manager import WW_TTSManager
+from project_window.project_window import ProjectWindow
 
 if TYPE_CHECKING:
     from gettext import gettext as _
@@ -88,6 +91,40 @@ def main():
     except Exception:
         pass
     app = QApplication(sys.argv)
+    # Global safe-shutdown handler to cleanly stop background workers
+    def _on_app_about_to_quit():
+        try:
+            # Stop any TTS playback and join threads
+            try:
+                WW_TTSManager.stop()
+            except Exception:
+                pass
+
+            # Interrupt any active LLM streaming at the aggregator level
+            try:
+                WWApiAggregator.interrupt()
+            except Exception:
+                pass
+
+            # If a WorkbenchWindow exists as the top-level widget, ask it to shutdown
+            try:
+                for w in QApplication.topLevelWidgets():
+                    try:
+                        # Call shutdown if implemented (Workbenches will expose this)
+                        if hasattr(w, 'shutdown') and callable(w.shutdown):
+                            w.shutdown()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # Connect the aboutToQuit signal to the shutdown handler so threads/QThreads are stopped
+    try:
+        app.aboutToQuit.connect(_on_app_about_to_quit)
+    except Exception:
+        pass
     install_cursor_manager(app)
     # Install global scroll manager to control wheel scroll speed application-wide
     try:
