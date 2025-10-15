@@ -23,13 +23,11 @@ class SummarizeTab(QWidget):
         summary_box.setStyleSheet("QLabel { border: 1px solid #888; padding: 8px; border-radius:4px; }")
         layout.addWidget(summary_box)
 
-        # keep prompt panel at bottom
-        layout.addStretch()
+        # prompt panel
         self.summary_tab_prompt_panel = PromptPanel("Summary")
-        self.summary_tab_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.summary_tab_prompt_panel.setMaximumWidth(250)
+        self.summary_tab_prompt_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        # self.summary_tab_prompt_panel.setMaximumWidth(250)
         summary_prompt_layout = QHBoxLayout()
         summary_prompt_layout.setContentsMargins(0, 0, 0, 0)
         summary_prompt_layout.addWidget(self.summary_tab_prompt_panel)
-        summary_prompt_layout.addStretch()
         layout.addLayout(summary_prompt_layout)

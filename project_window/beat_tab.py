@@ -26,13 +26,11 @@ class BeatTab(QWidget):
         layout.addWidget(self.prompt_input)
 
         # bottom row with prompt panel anchored to bottom
-        layout.addStretch()
-
         bottom_row_layout = QHBoxLayout()
         bottom_row_layout.setContentsMargins(0, 0, 0, 0)
         self.prose_prompt_panel = PromptPanel("Prose")
-        self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.prose_prompt_panel.setMaximumWidth(250)
+        self.prose_prompt_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        # self.prose_prompt_panel.setMaximumWidth(250)
         bottom_row_layout.addWidget(self.prose_prompt_panel)
         bottom_row_layout.addStretch()
         layout.addLayout(bottom_row_layout)

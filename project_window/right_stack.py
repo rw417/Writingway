@@ -66,8 +66,7 @@ class RightStack(QWidget):
         self.summary_preview_button.setToolTip(_("Preview the final prompt"))
         self.summary_preview_button.clicked.connect(self.summary_controller.preview_summary)
         layout.addWidget(self.summary_preview_button)
-        
-        layout.addStretch()
+
         self.summary_mode_combo = QComboBox()
         # Populate combo box with enum values and localized display names
         for mode in SummaryMode:
@@ -88,7 +87,6 @@ class RightStack(QWidget):
         self.delete_summary_button.clicked.connect(self.summary_controller.delete_summary)
         layout.addWidget(self.delete_summary_button)
 
-        layout.addStretch()
         return panel
 
     def _start_summary(self):

@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QFormLayout, QGroupBox, QComboBox
+from PyQt5.QtWidgets import QFormLayout, QGroupBox, QComboBox, QWidget, QHBoxLayout, QSizePolicy
 from PyQt5.QtCore import QFileSystemWatcher
 
 from .prompt_utils import load_prompts
@@ -37,15 +37,28 @@ class PromptPanel(QGroupBox):
 
         self.prompt_combo.setToolTip(tip)
         self.prompt_combo.currentIndexChanged.connect(self._on_prompt_combo_changed)
-        self.prompt_combo.setMinimumWidth(300)
         self._populate_prompt_combo()
-        llm_settings_layout.addRow(self.prompt_combo)
+
+        # set size
+        for combo in (self.prompt_combo, self.provider_combo, self.model_combo):
+            combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            combo.setMinimumWidth(80)
+
+        # arrange the three dropdowns horizontally in one row
+        combos_widget = QWidget()
+        combos_row = QHBoxLayout(combos_widget)
+        combos_row.setContentsMargins(0, 0, 0, 0)
+        combos_row.setSpacing(6)
+
+        combos_row.addWidget(self.prompt_combo)
+        combos_row.addWidget(self.provider_combo)
+        combos_row.addWidget(self.model_combo)
+
+        llm_settings_layout.addRow(combos_widget)
 
         self.provider_combo.currentIndexChanged.connect(self._on_provider_combo_changed)
-        llm_settings_layout.addRow(self.provider_combo)
-        llm_settings_layout.addRow(self.model_combo)
         self.setLayout(llm_settings_layout)
-        
+
         self._on_provider_combo_changed()
     
     def repopulate_prompts(self):
