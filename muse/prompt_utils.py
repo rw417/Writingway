@@ -35,7 +35,7 @@ def load_project_options(project_name: str) -> Dict:
 def get_default_prompt(style: str) -> Dict:
     """Generate a default prompt configuration for the given style."""
     default_prompts = {
-        "Prose": _("You are collaborating with the author to write a scene. Write the scene in {pov} point of view, from the perspective of {pov_character}, and in {tense}."),
+        "Prose": _("You are collaborating with the author to write a scene. Write the scene in {{ pov }} point of view, from the perspective of {{ pov_character }}, and in {{ tense }}."),
         "Summary": _("Summarize the following chapter for use in a story prompt, covering Goal, Key Events, Character Dev, Info Revealed, Emotional Arc, and Plot Setup. Be conscientious of token usage."),
         "Rewrite": _("Rewrite the passage for clarity."),
         "Workshop": _("I need your help with my project. Please provide creative brainstorming and ideas."),

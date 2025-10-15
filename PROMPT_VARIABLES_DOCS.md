@@ -2,7 +2,7 @@
 
 ## Overview
 
-Writingway now has a centralized prompt variable system that makes it easy to add and use variables in your prompts. Instead of manually managing variables in multiple places, the system automatically collects all available variables and makes them available for use in prompt templates.
+Writingway now has a centralized prompt variable system that makes it easy to add and use variables in your prompts. Instead of manually managing variables in multiple places, the system automatically collects all available variables and makes them available for use in Jinja2 prompt templates.
 
 ## Built-in Variables
 
@@ -10,38 +10,46 @@ The following variables are automatically available in all prompts:
 
 | Variable | Description | Example Value |
 |----------|-------------|---------------|
-| `{pov}` | Current POV setting | "Third Person Limited" |
-| `{pov_character}` | Current POV character | "Alice" |
-| `{tense}` | Current tense setting | "Past Tense" |
-| `{story_so_far}` | Current scene text | The full text of current scene |
-| `{sceneBeat}` | Action beats text | User's action beats input |
-| `{context}` | Selected context from compendium | Selected compendium entries |
-| `{user_input}` | Input passed when sending prompt | Varies by context |
-| `{selectedText}` | Currently selected text in editor | Any selected text |
-| `{projectName}` | Name of current project | "My Novel" |
-| `{currentDate}` | Current date | "2025-10-06" |
-| `{wordCount}` | Word count of current scene | "1,247" |
-| `{additionalInstructions}` | Additional instructions from Tweaks tab | User's supplemental guidance |
-| `{outputWordCount}` | Target word count from Tweaks tab | "200" |
-| `{wordsBefore(n, fullSentence)}` | Text snippet of up to n words immediately before the cursor or selection; if fullSentence=True, trims a partial leading sentence | e.g. "...he opened the door." |
-| `{wordsAfter(n, fullSentence)}` | Text snippet of up to n words immediately after the cursor or selection; if fullSentence=True, trims a partial trailing sentence | e.g. "She walked into the room..." |
+| `{{ pov }}` | Current POV setting | "Third Person Limited" |
+| `{{ pov_character }}` | Current POV character | "Alice" |
+| `{{ tense }}` | Current tense setting | "Past Tense" |
+| `{{ story_so_far }}` | Current scene text | The full text of current scene |
+| `{{ sceneBeat }}` | Action beats text | User's action beats input |
+| `{{ context }}` | Selected context from compendium | Selected compendium entries |
+| `{{ user_input }}` | Input passed when sending prompt | Varies by context |
+| `{{ selectedText }}` | Currently selected text in editor | Any selected text |
+| `{{ projectName }}` | Name of current project | "My Novel" |
+| `{{ currentDate }}` | Current date | "2025-10-06" |
+| `{{ wordCount }}` | Word count of current scene | "1,247" |
+| `{{ additionalInstructions }}` | Additional instructions from Tweaks tab | User's supplemental guidance |
+| `{{ outputWordCount }}` | Target word count from Tweaks tab | "200" |
+| `{{ wordsBefore(n, fullSentence) }}` | Text snippet of up to n words immediately before the cursor or selection; if fullSentence=True, trims a partial leading sentence | e.g. "...he opened the door." |
+| `{{ wordsAfter(n, fullSentence) }}` | Text snippet of up to n words immediately after the cursor or selection; if fullSentence=True, trims a partial trailing sentence | e.g. "She walked into the room..." |
 
 ## Using Variables in Prompts
 
-Simply reference any variable in your prompt content using curly braces:
+Reference any variable with Jinja2 double braces `{{ ... }}`:
 
 ```
-You are helping to write a story in {pov} from {pov_character}'s perspective.
+You are helping to write a story in {{ pov }} from {{ pov_character }}'s perspective.
 
-Current scene ({wordCount} words):
-{story_so_far}
+Current scene ({{ wordCount }} words):
+{{ story_so_far }}
 
 Selected text to rewrite:
-{selectedText}
+{{ selectedText }}
 
-Instructions: {instructions}
+Instructions: {{ instructions }}
 
-Please rewrite the selected text in {tense}.
+Please rewrite the selected text in {{ tense }}.
+
+Conditional sections (Jinja2 logic):
+
+{% if selectedText %}
+Selected text exists and will be rewritten.
+{% else %}
+No selection detected; use story context instead.
+{% endif %}
 ```
 
 ## Adding Custom Variables
@@ -90,41 +98,41 @@ if manager:
 
 ### Rewriting Prompt
 ```
-Rewrite the following text to be more {adjective} while maintaining the {tense} and {pov} perspective:
+Rewrite the following text to be more {{ adjective }} while maintaining the {{ tense }} and {{ pov }} perspective:
 
-{selectedText}
+{{ selectedText }}
 
-Target length: approximately {outputWordCount} words.
+Target length: approximately {{ outputWordCount }} words.
 
-Additional guidance: {additionalInstructions}
+Additional guidance: {{ additionalInstructions }}
 
-Make sure the rewrite fits the tone of: {projectName}
+Make sure the rewrite fits the tone of: {{ projectName }}
 ```
 
 ### Character Development Prompt  
 ```
-Analyze {pov_character}'s character development in this {wordCount}-word scene:
+Analyze {{ pov_character }}'s character development in this {{ wordCount }}-word scene:
 
-{story_so_far}
+{{ story_so_far }}
 
-Consider the context: {context}
+Consider the context: {{ context }}
 ```
 
 ### Scene Enhancement Prompt
 ```
-Enhance this scene for {projectName} (written {currentDate}):
+Enhance this scene for {{ projectName }} (written {{ currentDate }}):
 
-Current scene in {tense}, {pov}:
-{story_so_far}
+Current scene in {{ tense }}, {{ pov }}:
+{{ story_so_far }}
 
 Action beats to incorporate:
-{sceneBeat}
+{{ sceneBeat }}
 
 Selected text that needs special attention:
-{selectedText}
+{{ selectedText }}
 
-Additional instructions: {additionalInstructions}
-Target length: {outputWordCount} words
+Additional instructions: {{ additionalInstructions }}
+Target length: {{ outputWordCount }} words
 ```
 
 ## Benefits
@@ -133,7 +141,7 @@ Target length: {outputWordCount} words
 2. **Automatic Collection**: No need to manually gather variables
 3. **Easy Extension**: Simple API to add new variables
 4. **UI Integration**: Variables automatically update based on UI state
-5. **Legacy Compatibility**: Old prompts still work
+5. **Jinja2 Logic**: Use `{% if %}`, `{% for %}`, filters, and function calls
 
 ## Migration Guide
 
@@ -150,7 +158,7 @@ def get_additional_vars(self):
 ### New Way (Automatic)
 Variables are automatically collected. Just reference them in prompts:
 ```
-Write in {pov} using these instructions: {instructions}
+Write in {{ pov }} using these instructions: {{ instructions }}
 ```
 
 To add custom variables:
@@ -169,7 +177,7 @@ project_window.add_prompt_variable('myVar', 'myValue')
 
 ## Error Handling
 
-When a variable is missing or invalid, the system:
+When a variable is missing or invalid (e.g., `{{ badVar }}`), the system:
 
 1. **Shows clear error messages**: `{ERROR: 'variableName' not found}`
 2. **Continues processing other variables**: Valid variables still work
@@ -178,30 +186,49 @@ When a variable is missing or invalid, the system:
 
 Example with missing variables:
 ```
-Input:  "Write in {pov} from {badVar}'s perspective using {tense}."
+Input:  "Write in {{ pov }} from {{ badVar }}'s perspective using {{ tense }}."
 Variables: {"pov": "Third Person", "tense": "Past Tense"}
 Result: "Write in Third Person from {ERROR: 'badVar' not found}'s perspective using Past Tense."
 ```
 
 ## Advanced: Parameterized variables
 
-You can call parameterized variables using parentheses. Two helpers are available:
+You can call parameterized variables in Jinja expressions. Two helpers are available:
 
-- `{wordsBefore(n, fullSentence)}` — returns up to `n` words immediately before the current cursor position (or before the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text begins in the middle of a sentence, the partial first sentence will be dropped so the returned text starts at a sentence boundary.
+- `{{ wordsBefore(n, fullSentence) }}` — returns up to `n` words immediately before the current cursor position (or before the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text begins in the middle of a sentence, the partial first sentence will be dropped so the returned text starts at a sentence boundary.
 
-- `{wordsAfter(n, fullSentence)}` — returns up to `n` words immediately after the current cursor position (or after the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text ends in the middle of a sentence, the partial last sentence will be dropped so the returned text ends at a sentence boundary.
+- `{{ wordsAfter(n, fullSentence) }}` — returns up to `n` words immediately after the current cursor position (or after the current selection if text is selected). Defaults: `n=200`, `fullSentence=True`. If `fullSentence=True` and the extracted text ends in the middle of a sentence, the partial last sentence will be dropped so the returned text ends at a sentence boundary.
 
 Example:
 
 ```
 Context before selection:
-{wordsBefore(100, True)}
+{{ wordsBefore(100, True) }}
 
 Context after selection:
-{wordsAfter(150, True)}
+{{ wordsAfter(150, True) }}
+
+Conditional inclusion of context:
+
+{% if selectedText %}
+Selected text:
+{{ selectedText }}
+{% else %}
+No selection; include some context before and after:
+Before:
+{{ wordsBefore(100) }}
+
+After:
+{{ wordsAfter(100) }}
+{% endif %}
 ```
 
 Notes:
 - If the editor or cursor is not available, these variables return an empty string.
 - If fewer than `n` words are available before/after, the full available text is returned (subject to sentence trimming).
 - The arguments may be integers or booleans (`True`/`False`).
+
+## Important: Syntax change
+
+- Use Jinja2 variable syntax `{{ ... }}` and block syntax `{% ... %}` everywhere.
+- Legacy single-brace placeholders like `{var}` or `{wordsBefore(200)}` are no longer supported and will not be evaluated.

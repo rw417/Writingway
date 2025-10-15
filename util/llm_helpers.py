@@ -161,20 +161,20 @@ def gather_prompt_data_from_ui(right_stack, scene_editor, project_tree):
     Returns:
         dict: Dictionary containing all gathered prompt data
     """
+    if hasattr(right_stack, 'get_prompt_data'):
+        return right_stack.get_prompt_data()
+
     action_beats = right_stack.prompt_input.toPlainText().strip()
     prose_config = right_stack.prose_prompt_panel.get_prompt()
     overrides = right_stack.prose_prompt_panel.get_overrides()
-    
-    # The centralized system now handles all variables automatically
-    # No need to manually collect additional_vars, current_scene_text, extra_context
-    
+
     return {
         'user_input': action_beats,
         'prompt_config': prose_config,
         'overrides': overrides,
-        'additional_vars': None,  # Legacy - now handled by centralized system
-        'current_scene_text': None,  # Legacy - now handled by centralized system  
-        'extra_context': None  # Legacy - now handled by centralized system
+        'additional_vars': None,
+        'current_scene_text': None,
+        'extra_context': None
     }
 
 

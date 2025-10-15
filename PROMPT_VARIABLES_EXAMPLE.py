@@ -1,55 +1,59 @@
 # Example: How to use the new prompt variable system in Writingway
 
 """
-This file shows how to use the new centralized prompt variable system.
-You can now easily add variables that can be referenced in prompts using {variableName}.
+This file shows how to use the new centralized prompt variable system with Jinja2.
+You can reference variables in prompts using {{ variableName }} and use Jinja logic like {% if %}.
 
 Built-in Variables (automatically available):
-- {pov} - Current POV setting (First Person, Third Person Limited, etc.)
-- {pov_character} - Current POV character name
-- {tense} - Current tense setting (Past Tense, Present Tense, etc.)
-- {story_so_far} - Current scene text (if editing a scene)
-- {sceneBeat} - Action beats text
-- {context} - Selected context from compendium
-- {user_input} - Input passed when sending prompt
-- {selectedText} - Currently selected text in editor
-- {projectName} - Name of current project
-- {currentDate} - Current date
-- {wordCount} - Word count of current scene
-- {additionalInstructions} - Additional instructions from Tweaks tab
-- {outputWordCount} - Target word count from Tweaks tab (default: 200)
+- {{ pov }} - Current POV setting (First Person, Third Person Limited, etc.)
+- {{ pov_character }} - Current POV character name
+- {{ tense }} - Current tense setting (Past Tense, Present Tense, etc.)
+- {{ story_so_far }} - Current scene text (if editing a scene)
+- {{ sceneBeat }} - Action beats text
+- {{ context }} - Selected context from compendium
+- {{ user_input }} - Input passed when sending prompt
+- {{ selectedText }} - Currently selected text in editor
+- {{ projectName }} - Name of current project
+- {{ currentDate }} - Current date
+- {{ wordCount }} - Word count of current scene
+- {{ additionalInstructions }} - Additional instructions from Tweaks tab
+- {{ outputWordCount }} - Target word count from Tweaks tab (default: 200)
 
 Example Usage in Prompts:
 """
 
 # Example prompt content that uses variables:
 example_prompt = """
-You are helping {pov_character} write a story in {pov} point of view, using {tense}.
+You are helping {{ pov_character }} write a story in {{ pov }} point of view, using {{ tense }}.
 
-Project: {projectName}
-Current scene word count: {wordCount}
-Date: {currentDate}
+Project: {{ projectName }}
+Current scene word count: {{ wordCount }}
+Date: {{ currentDate }}
 
 Current story so far:
-{story_so_far}
+{{ story_so_far }}
 
 Selected text to work with:
-{selectedText}
+{{ selectedText }}
 
 Action beats to incorporate:
-{sceneBeat}
+{{ sceneBeat }}
 
 Additional context:
-{context}
+{{ context }}
 
 Additional instructions:
-{additionalInstructions}
+{{ additionalInstructions }}
 
-Target output length: approximately {outputWordCount} words
+Target output length: approximately {{ outputWordCount }} words
 
-User request: {user_input}
+User request: {{ user_input }}
 
-Please help improve this scene.
+{% if selectedText %}
+Please rewrite the selected text in {{ tense }}.
+{% else %}
+No selection detected; base suggestions on the story context above.
+{% endif %}
 """
 
 # How to add custom variables in your code:
@@ -87,13 +91,13 @@ def example_prompt_usage():
     """
     When you create a prompt with content like:
     
-    "Rewrite this text in {tense} from {pov_character}'s perspective: {selectedText}"
+    "Rewrite this text in {{ tense }} from {{ pov_character }}'s perspective: {{ selectedText }}"
     
     The system will automatically:
     1. Collect current values for all variables
-    2. Replace {tense} with current tense setting
-    3. Replace {pov_character} with current POV character
-    4. Replace {selectedText} with currently selected text
+    2. Replace {{ tense }} with current tense setting
+    3. Replace {{ pov_character }} with current POV character
+    4. Replace {{ selectedText }} with currently selected text
     5. Send the formatted prompt to LLM
     
     If a variable is missing, it will show an error like:
@@ -109,7 +113,7 @@ def error_handling_example():
     """
     Example of how the system handles missing variables:
     
-    Prompt content: "Write in {pov} about {unknownVar} using {tense}."
+    Prompt content: "Write in {{ pov }} about {{ unknownVar }} using {{ tense }}."
     Available vars: {"pov": "First Person", "tense": "Present"}
     
     Result: "Write in First Person about {ERROR: 'unknownVar' not found} using Present."
@@ -135,7 +139,7 @@ def migration_notes():
     
     New way:
     - Variables are automatically collected
-    - Just reference them in prompts as {variableName}
+    - Just reference them in prompts as {{ variableName }}
     - Add custom variables using project_window.add_prompt_variable()
     - System handles UI integration automatically
     """

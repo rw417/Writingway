@@ -5,6 +5,7 @@ import os
 from langchain.prompts import PromptTemplate
 from settings.llm_api_aggregator import WWApiAggregator
 from .prompt_variables import get_prompt_variables, set_user_input, evaluate_variable_expression
+from .jinja_renderer import render_template
 
 DEFAULT_PROMPT_FALLBACK = "Write a story chapter based on the following user input"
 
@@ -35,53 +36,12 @@ def _format_prompt_messages(messages, variables=None):
 
 
 def _safe_format_variables(content, variables):
-    """
-    Safely format variables in content, handling missing variables individually.
-    If a variable is missing, it shows an error message for that variable only,
-    while other variables are still evaluated correctly.
-    """
-    import re
-    
-    # Find all variable references in the content
-    variable_pattern = r'\{([^}]+)\}'
-    
-    def replace_variable(match):
-        var_name = match.group(1).strip()
-        # If variable looks like a function call (has parentheses), try evaluating
-        try:
-            if '(' in var_name and var_name.endswith(')'):
-                try:
-                    value = evaluate_variable_expression(var_name)
-                    return str(value) if value is not None else ""
-                except KeyError:
-                    return f"{{ERROR: '{var_name}' not found}}"
+    """Render a single message content with Jinja2, preserving legacy {var} syntax.
 
-            if var_name in variables:
-                value = variables[var_name]
-                # Handle None values gracefully
-                return str(value) if value is not None else ""
-            else:
-                # Return a clear error message for missing variable
-                # Using a format that's easy to spot but doesn't break prompt flow
-                return f"{{ERROR: '{var_name}' not found}}"
-        except Exception as e:
-            print(f"Error replacing variable '{var_name}': {e}")
-            return ""
-    
-    try:
-        # Replace each variable individually
-        result = re.sub(variable_pattern, replace_variable, content)
-        
-        # Log missing variables for debugging (without breaking the prompt)
-        missing_vars = re.findall(r'\{ERROR: \'([^\']+)\' not found\}', result)
-        if missing_vars:
-            print(f"Warning: Missing prompt variables: {', '.join(missing_vars)}")
-        
-        return result
-    except Exception as e:
-        # If anything else goes wrong, return content with error note
-        print(f"Error formatting variables in content: {e}")
-        return content
+    This uses the centralized Jinja renderer which converts single-brace
+    placeholders to Jinja2 and renders with provided variables and helpers.
+    """
+    return render_template(content or "", variables)
 
 
 if '_' not in globals():

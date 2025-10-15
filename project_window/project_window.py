@@ -963,9 +963,13 @@ class ProjectWindow(QMainWindow):
                 return
             prompt_block = None
             if self.right_stack.include_prompt_checkbox.isChecked():
-                prompt = self.right_stack.prompt_input.toPlainText().strip()
-                if prompt:
-                    prompt_block = f"\n{'_' * 10}\n{prompt}\n{'_' * 10}\n"
+                include_text = ''
+                if hasattr(self.right_stack, 'get_include_block_text'):
+                    include_text = self.right_stack.get_include_block_text()
+                else:
+                    include_text = self.right_stack.prompt_input.toPlainText().strip()
+                if include_text:
+                    prompt_block = f"\n{'_' * 10}\n{include_text}\n{'_' * 10}\n"
             cursor = self.scene_editor.editor.textCursor()
             cursor.movePosition(QTextCursor.End)
             if prompt_block:

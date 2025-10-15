@@ -36,3 +36,4 @@ beautifulsoup4
 python-docx
 markdown>=3.4
 pygments
+jinja2>=3.0

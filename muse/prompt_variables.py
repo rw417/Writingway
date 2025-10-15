@@ -153,11 +153,17 @@ class ProjectVariableManager(PromptVariableManager):
             
             # Selected text in editor
             def get_selected_text():
+                if right_stack and hasattr(right_stack, 'get_selected_text_for_prompt'):
+                    text = right_stack.get_selected_text_for_prompt()
+                    if text:
+                        return text
+
                 editor = scene_editor.editor
                 if hasattr(editor, 'textCursor'):
                     cursor = editor.textCursor()
                     if cursor.hasSelection():
-                        return cursor.selectedText()
+                        fragment = cursor.selection()
+                        return fragment.toPlainText().strip()
                 return ""
             self.register_collector('selectedText', get_selected_text)
         
@@ -191,9 +197,15 @@ class ProjectVariableManager(PromptVariableManager):
                 extracted = text[start_index:end_pos]
 
                 if fullSentence:
-                    # If the character before start_index exists and is not a sentence end,
-                    # then the first sentence in extracted may be partial. Drop it.
-                    if start_index > 0 and text[start_index-1] not in '.!?':
+                    # Determine whether the extract actually begins at a sentence boundary.
+                    # We consider punctuation optionally followed by closing quotes as a terminator
+                    # e.g. ." ," !" ?"
+                    prefix = text[:start_index]
+                    # If prefix ends with punctuation possibly followed by quote characters and whitespace,
+                    # treat as a sentence boundary and keep the extract. Otherwise drop the partial first sentence.
+                    if re.search(r'[.!?,][\"”\']*\s*$', prefix):
+                        pass
+                    else:
                         # Split into sentences and drop the first (partial) sentence
                         parts = re.split(r'(?<=[.!?])\s+', extracted)
                         if len(parts) > 1:
@@ -232,12 +244,11 @@ class ProjectVariableManager(PromptVariableManager):
                 extracted = text[start_pos:end_index]
 
                 if fullSentence:
-                    # If the character after end_index exists and is not a sentence end,
-                    # then the last sentence in extracted may be partial. Drop it.
-                    if end_index < len(text) and text[end_index] not in '.!?':
+                    # If the extracted snippet does not end with sentence punctuation (optionally followed by quotes),
+                    # drop the last partial sentence so the result contains only whole sentences.
+                    if not re.search(r'[.!?,][\"”\']*\s*$', extracted):
                         parts = re.split(r'(?<=[.!?])\s+', extracted)
                         if len(parts) > 1:
-                            # Drop the last (partial) sentence
                             extracted = '\n'.join(parts[:-1]).strip()
                         else:
                             extracted = ''
