@@ -27,14 +27,33 @@ class PromptVariableManager:
     
     def get_all_variables(self) -> Dict[str, str]:
         """Collect all registered variables and their current values."""
-        variables = {}
+        variables: Dict[str, Any] = {}
         for name, collector in self._collectors.items():
             try:
                 value = collector()
-                variables[name] = str(value) if value is not None else ""
+                value_str = str(value) if value is not None else ""
             except Exception as e:
                 print(f"Error collecting variable '{name}': {e}")
-                variables[name] = ""
+                value_str = ""
+
+            # If collector name contains dot notation (e.g., 'scene.fullText'),
+            # build nested dictionaries so Jinja2 can access `scene.fullText`.
+            if '.' in name:
+                parts = name.split('.')
+                top = parts[0]
+                rest = parts[1:]
+                node = variables.setdefault(top, {})
+                # If an earlier non-dict value existed for this top-level key, overwrite it
+                if not isinstance(node, dict):
+                    node = {}
+                    variables[top] = node
+                cur = node
+                for part in rest[:-1]:
+                    cur = cur.setdefault(part, {})
+                cur[rest[-1]] = value_str
+            else:
+                variables[name] = value_str
+
         return variables
 
     def register_param_collector(self, variable_name: str, collector_func: Callable[..., str]):
@@ -121,6 +140,33 @@ class ProjectVariableManager(PromptVariableManager):
             # Context from context panel
             self.register_collector('context', 
                 lambda: getattr(right_stack.context_panel, 'get_selected_context_text', lambda: "")() if hasattr(right_stack, 'context_panel') else "")
+
+            # Scene full text and scene summary collectors
+            def get_scene_full_text():
+                try:
+                    # Use project_tree current item to ensure a scene is selected
+                    current_item = getattr(project_window, 'project_tree', None)
+                    if current_item and hasattr(project_window.project_tree, 'tree'):
+                        item = project_window.project_tree.tree.currentItem()
+                        if item and project_window.project_tree.get_item_level(item) >= 2:
+                            editor = getattr(project_window.scene_editor, 'editor', None)
+                            if editor and hasattr(editor, 'toPlainText'):
+                                return editor.toPlainText() or ""
+                    return ""
+                except Exception:
+                    return ""
+
+            def get_scene_summary():
+                try:
+                    right = getattr(project_window, 'right_stack', None)
+                    if right and hasattr(right, 'scene_summary_edit') and right.scene_summary_edit:
+                        return right.scene_summary_edit.toPlainText() or ""
+                    return ""
+                except Exception:
+                    return ""
+
+            self.register_collector('scene.fullText', get_scene_full_text)
+            self.register_collector('scene.summary', get_scene_summary)
 
             # Tweaks widget values (additional instructions, output word count)
             if hasattr(right_stack, 'tweaks_widget'):

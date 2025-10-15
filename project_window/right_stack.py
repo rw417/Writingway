@@ -8,17 +8,12 @@ from PyQt5.QtWidgets import QStyle, QStyleOptionTab
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QVariant
 from settings.theme_manager import ThemeManager
-from .focus_mode import PlainTextEdit
-from compendium.context_panel import ContextPanel
 from .summary_controller import SummaryController, SummaryMode
 from .summary_model import SummaryModel
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
 from muse.prompt_variables import get_prompt_variables
-from project_window.tweaks_widget import TweaksWidget
-from project_window.preview_editable_widget import PreviewEditableWidget
-from project_window.preview_uneditable_widget import PreviewUneditableWidget
-from project_window.rewrite_tab import RewriteTab
+from project_window.llm_panel import LLMPanel
 from copy import deepcopy
 
 # gettext '_' fallback for static analysis / standalone edits
@@ -116,253 +111,7 @@ class RightStack(QWidget):
         self.summary_mode_combo.setVisible(level == 0)
 
     def create_llm_panel(self):
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # --- Top control container (POV/Tense etc.) ---
-        top_control_container = QWidget()
-        top_control_layout = QVBoxLayout(top_control_container)
-        top_control_layout.setContentsMargins(0, 0, 0, 0)
-
-        top_row = QWidget()
-        top_row_layout = QHBoxLayout(top_row)
-        top_row_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.pov_combo = QComboBox()
-        self.pov_combo.addItems([_("1st Person"), _("2nd Person"), _("3rd Person Limited"), _("3rd Person Omniscient"), _("Custom...")])
-        self.pov_combo.currentIndexChanged.connect(self.controller.handle_pov_change)
-
-        self.pov_character_combo = QComboBox()
-        self.pov_character_combo.addItems(["Alice", "Bob", "Charlie", _("Custom...")])
-        self.pov_character_combo.currentIndexChanged.connect(self.controller.handle_pov_character_change)
-
-        self.tense_combo = QComboBox()
-        self.tense_combo.addItems([_("Past Tense"), _("Present Tense"), _("Custom...")])
-        self.tense_combo.currentIndexChanged.connect(self.controller.handle_tense_change)
-
-        pov_widget = QWidget()
-        pov_widget_layout = QHBoxLayout(pov_widget)
-        pov_widget_layout.setContentsMargins(0, 0, 0, 0)
-        pov_widget_layout.addWidget(QLabel(_("POV: ")))
-        pov_widget_layout.addWidget(self.pov_combo)
-        pov_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-
-        pov_char_widget = QWidget()
-        pov_char_widget_layout = QHBoxLayout(pov_char_widget)
-        pov_char_widget_layout.setContentsMargins(0, 0, 0, 0)
-        pov_char_widget_layout.addWidget(QLabel(_("of: ")))
-        pov_char_widget_layout.addWidget(self.pov_character_combo)
-        pov_char_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-
-        tense_widget = QWidget()
-        tense_widget_layout = QHBoxLayout(tense_widget)
-        tense_widget_layout.setContentsMargins(0, 0, 0, 0)
-        tense_widget_layout.addWidget(QLabel(_("using: ")))
-        tense_widget_layout.addWidget(self.tense_combo)
-        tense_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-
-        top_row_layout.addWidget(pov_widget)
-        top_row_layout.addWidget(pov_char_widget)
-        top_row_layout.addWidget(tense_widget)
-        top_row_layout.addStretch()
-
-        self.scene_summary_edit = QTextEdit()
-        self.scene_summary_edit.setPlaceholderText(_("Enter a short scene summary..."))
-        self.scene_summary_edit.setMinimumHeight(80)
-        self.scene_summary_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        top_control_layout.addWidget(top_row)
-        top_control_layout.addWidget(self.scene_summary_edit)
-
-        self.top_control_container = top_control_container
-        self.top_control_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.top_control_container.setMaximumHeight(350)
-        layout.addWidget(self.top_control_container)
-
-        # --- Shared preview stack ---
-        self.preview_stack = QStackedWidget()
-
-        self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setPlaceholderText(_("LLM output preview will appear here..."))
-        # Limit the preview area height so it doesn't dominate the UI
-        self.preview_text.setMaximumHeight(350)
-        try:
-            sb = self.preview_text.verticalScrollBar()
-            sb.setSingleStep(12)
-        except Exception:
-            pass
-        self.preview_stack.addWidget(self.preview_text)
-
-        self.tweak_tab_widget = QTabWidget()
-        self.tweaks_widget = TweaksWidget()
-        self.preview_editable_widget = PreviewEditableWidget()
-        self.tweak_tab_widget.addTab(self.tweaks_widget, _("Tweaks"))
-        self.tweak_tab_widget.addTab(self.preview_editable_widget, _("Edit Prompt"))
-        self.preview_stack.addWidget(self.tweak_tab_widget)
-
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(100, self._connect_edit_signals)
-
-        self.preview_uneditable_widget = PreviewUneditableWidget()
-        self.preview_stack.addWidget(self.preview_uneditable_widget)
-        layout.addWidget(self.preview_stack)
-
-        # --- Preview action row ---
-        preview_buttons = QHBoxLayout()
-        preview_buttons.setContentsMargins(0, 0, 0, 0)
-        self.apply_button = QPushButton()
-        self.apply_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/save.svg", self.tint_color))
-        self.apply_button.setToolTip(_("Appends the LLM's output to your current scene"))
-        self.apply_button.clicked.connect(self.controller.apply_preview)
-        preview_buttons.addWidget(self.apply_button)
-
-        self.include_prompt_checkbox = QCheckBox(_("Include Action Beats"))
-        self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
-        self.include_prompt_checkbox.setChecked(True)
-        preview_buttons.addWidget(self.include_prompt_checkbox)
-        preview_buttons.addStretch()
-        layout.addLayout(preview_buttons)
-
-        # --- Controls container (buttons + tabs + context) ---
-        controls_container = QWidget()
-        controls_layout = QVBoxLayout(controls_container)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(6)
-        layout.addWidget(controls_container)
-
-        top_buttons_layout = QHBoxLayout()
-        top_buttons_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.tweak_prompt_button = QPushButton()
-        self.tweak_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/tool.svg", self.tint_color))
-        self.tweak_prompt_button.setToolTip(_("Tweak selected prompt"))
-        self.tweak_prompt_button.setCheckable(True)
-        self.tweak_prompt_button.clicked.connect(self.toggle_tweak_prompt)
-        top_buttons_layout.addWidget(self.tweak_prompt_button)
-
-        self.refresh_prompt_button = QPushButton()
-        self.refresh_prompt_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/refresh-cw.svg", self.tint_color))
-        self.refresh_prompt_button.setToolTip(_("Refresh prompt and discard changes"))
-        self.refresh_prompt_button.clicked.connect(self.refresh_prompt)
-        top_buttons_layout.addWidget(self.refresh_prompt_button)
-
-        self.preview_button = QPushButton()
-        self.preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", self.tint_color))
-        self.preview_button.setToolTip(_("Preview the final prompt"))
-        self.preview_button.setCheckable(True)
-        self.preview_button.clicked.connect(self.toggle_preview)
-        top_buttons_layout.addWidget(self.preview_button)
-
-        self.send_button = QPushButton()
-        self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg", self.tint_color))
-        self.send_button.setToolTip(_("Send prompt to LLM"))
-        self.send_button.clicked.connect(self.send_prompt_with_temp_config)
-        top_buttons_layout.addWidget(self.send_button)
-
-        self.stop_button = QPushButton()
-        self.stop_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/x-octagon.svg", self.tint_color))
-        self.stop_button.setToolTip(_("Interrupt the LLM response"))
-        self.stop_button.clicked.connect(self.controller.stop_llm)
-        top_buttons_layout.addWidget(self.stop_button)
-
-        self.context_toggle_button = QPushButton()
-        self.context_toggle_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book.svg", self.tint_color))
-        self.context_toggle_button.setToolTip(_("Toggle context panel"))
-        self.context_toggle_button.setCheckable(True)
-        self.context_toggle_button.clicked.connect(self.toggle_context_panel)
-        top_buttons_layout.addWidget(self.context_toggle_button)
-
-        top_buttons_layout.addStretch()
-        self.custom_edits_label = QLabel(_("Using Custom Prompt"))
-        self.custom_edits_label.setStyleSheet("QLabel { color: darkblue; padding: 0 8px; }")
-        self.custom_edits_label.setVisible(False)
-        top_buttons_layout.addWidget(self.custom_edits_label)
-
-        controls_layout.addLayout(top_buttons_layout)
-
-        # Use standard top-positioned tabs (easier to read and consistent on most platforms)
-        self.prompt_tab_widget = QTabWidget()
-        self.prompt_tab_widget.setTabPosition(QTabWidget.North)
-
-        write_tab = QWidget()
-        write_layout = QVBoxLayout(write_tab)
-        write_layout.setContentsMargins(0, 0, 0, 0)
-        write_layout.setSpacing(6)
-
-        self.prompt_input = PlainTextEdit()
-        self.prompt_input.setPlaceholderText(_("Enter your action beats here..."))
-        self.prompt_input.setFixedHeight(100)
-        self.prompt_input.textChanged.connect(self.controller.on_prompt_input_text_changed)
-        write_layout.addWidget(self.prompt_input)
-
-        bottom_row_layout = QHBoxLayout()
-        bottom_row_layout.setContentsMargins(0, 0, 0, 0)
-        self.prose_prompt_panel = PromptPanel("Prose")
-        self.prose_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.prose_prompt_panel.setMaximumWidth(250)
-        bottom_row_layout.addWidget(self.prose_prompt_panel)
-        bottom_row_layout.addStretch()
-        write_layout.addLayout(bottom_row_layout)
-        write_layout.addStretch()
-
-        self.write_tab_index = self.prompt_tab_widget.addTab(write_tab, _("Write"))
-
-        self.rewrite_tab = RewriteTab(self)
-        self.rewrite_tab_index = self.prompt_tab_widget.addTab(self.rewrite_tab, _("Rewrite"))
-
-        summarize_tab = QWidget()
-        summarize_layout = QVBoxLayout(summarize_tab)
-        summarize_layout.setContentsMargins(0, 0, 0, 0)
-        summarize_layout.addStretch()
-        placeholder = QLabel(_("Summary tools coming soon."))
-        placeholder.setAlignment(Qt.AlignCenter)
-        summarize_layout.addWidget(placeholder)
-        summarize_layout.addStretch()
-        self.summarize_tab_index = self.prompt_tab_widget.addTab(summarize_tab, _("Summarize"))
-
-        controls_layout.addWidget(self.prompt_tab_widget)
-
-        self.context_panel = ContextPanel(self.model.structure, self.model.project_name, self.controller, enhanced_window=self.controller.enhanced_window)
-        self.context_panel.setVisible(False)
-        controls_layout.addWidget(self.context_panel)
-
-        # Prompt state tracking for modes
-        self.prompt_modes = {
-            'write': {
-                'prompt_panel': self.prose_prompt_panel,
-                'original_prompt_config': None,
-                'temporary_prompt_config': None,
-                'has_custom_edits': False,
-                'initialized': False,
-            },
-            'rewrite': {
-                'prompt_panel': self.rewrite_tab.prompt_panel,
-                'original_prompt_config': None,
-                'temporary_prompt_config': None,
-                'has_custom_edits': False,
-                'initialized': False,
-            },
-        }
-        self.active_mode = 'write'
-
-        # Signal wiring after state initialization
-        self.prose_prompt_panel.prompt_combo.currentIndexChanged.connect(lambda: self.on_prompt_selected('write'))
-        self.rewrite_tab.prompt_panel.prompt_combo.currentIndexChanged.connect(lambda: self.on_prompt_selected('rewrite'))
-        self.prompt_tab_widget.currentChanged.connect(self._on_tab_changed)
-
-        if hasattr(self.scene_editor, 'editor'):
-            try:
-                self.scene_editor.editor.selectionChanged.connect(self._on_editor_selection_changed)
-            except Exception:
-                pass
-        self._on_editor_selection_changed()
-
-        self.reset_temporary_config('write')
-        self._apply_toggle_highlight_style()
-        self._on_tab_changed(self.write_tab_index)
-        return panel
+        return LLMPanel(self)
 
     def add_combo(self, layout, label_text, items, callback):
         combo = QComboBox()
@@ -448,6 +197,80 @@ class RightStack(QWidget):
 
     def _update_progress(self, message):
         self.controller.statusBar().showMessage(message, 5000)
+
+    def _move_widget_to_layout(self, widget, layout, index):
+        """Reparent a shared widget into the target layout at the desired position."""
+        if not widget or not layout:
+            return
+        parent_widget = widget.parentWidget()
+        if parent_widget and parent_widget.layout():
+            parent_widget.layout().removeWidget(widget)
+        target_parent = layout.parentWidget()
+        if target_parent is not None:
+            widget.setParent(target_parent)
+        layout.insertWidget(index, widget)
+        widget.show()
+
+    def _embed_shared_widgets(self, mode):
+        """Ensure the preview stack and button bar live inside the active tab."""
+        layout = getattr(self, 'tab_layouts', {}).get(mode)
+        if not layout or self.current_shared_mode == mode:
+            return
+        # Insert order: preview_stack (0), preview_actions_widget (1), prompt_controls_widget (2)
+        self._move_widget_to_layout(self.preview_stack, layout, 0)
+
+        # preview actions (apply + include) are not visible for summarize
+        if getattr(self, 'preview_actions_widget', None):
+            if mode != 'summarize':
+                self.preview_actions_widget.setVisible(True)
+                self._move_widget_to_layout(self.preview_actions_widget, layout, 1)
+            else:
+                # Remove/hide from layout if present
+                try:
+                    self.preview_actions_widget.setParent(None)
+                except Exception:
+                    pass
+
+        if getattr(self, 'prompt_controls_widget', None):
+            self._move_widget_to_layout(self.prompt_controls_widget, layout, 2)
+
+        # connect preview changes to per-tab mirrors (if any)
+        try:
+            self.preview_text.textChanged.connect(self._on_shared_preview_changed)
+        except Exception:
+            pass
+
+        self.current_shared_mode = mode
+
+    def _on_shared_preview_changed(self):
+        """Sync hook if we later mirror preview text into per-tab separate widgets."""
+        # Currently we use a shared preview_text; placeholder for future per-tab mirroring
+        return
+
+    def apply_tab_preview(self):
+        """Apply the preview text into the editor depending on the active tab.
+
+        Beat (write): insert at cursor. Rewrite: replace selection. Summarize: no-op.
+        """
+        try:
+            preview = self.preview_text.toPlainText()
+            mode = getattr(self, 'active_mode', 'write')
+            editor = getattr(self.scene_editor, 'editor', None)
+            if not editor or not preview:
+                return
+
+            cursor = editor.textCursor()
+            if mode in ('write', 'beat'):
+                cursor.insertText(preview)
+            elif mode == 'rewrite':
+                if cursor.hasSelection():
+                    cursor.insertText(preview)
+                else:
+                    # No selection — insert at cursor
+                    cursor.insertText(preview)
+            # For summarize, controls are hidden and no action is taken
+        except Exception:
+            return
 
     def toggle_context_panel(self):
         context_panel = self.context_panel
@@ -578,6 +401,8 @@ class RightStack(QWidget):
     def _set_active_mode(self, mode):
         self.active_mode = mode
         is_prompt_mode = mode in self.prompt_modes
+
+        self._embed_shared_widgets(mode)
 
         for button in (self.tweak_prompt_button, self.refresh_prompt_button, self.preview_button, self.send_button):
             if button:

@@ -266,6 +266,16 @@ def handle_llm_completion(controller, preview_text_widget):
         formatted_text = formatted_text.replace("\n", "<br>")
         preview_text_widget.setHtml(formatted_text)
     logging.debug(f"Active threads: {threading.enumerate()}")
+    # If the right stack is present and the user was in summarize mode,
+    # place the raw returned string into the scene summary edit box.
+    try:
+        if hasattr(controller, 'right_stack') and getattr(controller.right_stack, 'active_mode', None) == 'summarize':
+            # Use scene_summary_edit on the top control container if available
+            if hasattr(controller.right_stack, 'scene_summary_edit') and controller.right_stack.scene_summary_edit:
+                controller.right_stack.scene_summary_edit.setPlainText(raw_text)
+    except Exception:
+        # Do not block on failures here
+        logging.debug('Failed to copy LLM output into scene_summary_edit', exc_info=True)
 
 
 def update_llm_text(text, preview_text_widget):

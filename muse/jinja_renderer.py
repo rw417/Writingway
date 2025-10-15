@@ -89,7 +89,29 @@ def render_template(template_text: str, variables: Optional[Dict[str, Any]] = No
     """
     try:
         tmpl: Template = _env().from_string(template_text or "")
-        ctx = dict(variables or {})
+        # Make a shallow copy of provided variables and normalize dotted keys
+        ctx: Dict[str, Any] = dict(variables or {})
+
+        # If any keys include dots (like 'scene.fullText'), convert them into nested dicts
+        dotted_keys = [k for k in list(ctx.keys()) if isinstance(k, str) and '.' in k]
+        for dk in dotted_keys:
+            try:
+                parts = dk.split('.')
+                top = parts[0]
+                rest = parts[1:]
+                # Ensure top exists and is a dict
+                top_node = ctx.get(top)
+                if top_node is None or not isinstance(top_node, dict):
+                    ctx[top] = {}
+                    top_node = ctx[top]
+                cur = top_node
+                for p in rest[:-1]:
+                    cur = cur.setdefault(p, {})
+                cur[rest[-1]] = ctx.pop(dk)
+            except Exception:
+                # Non-fatal: leave the original flat key if conversion fails
+                pass
+
         return tmpl.render(**ctx)
     except Exception as e:
         # Fail soft: return original text and append error note so UI remains usable

@@ -32,6 +32,9 @@ class RewriteTab(QWidget):
         self.selected_text_edit.setFocusPolicy(Qt.NoFocus)
         layout.addWidget(self.selected_text_edit)
 
+        # push the bottom-row to the bottom
+        layout.addStretch()
+
         bottom_row_layout = QHBoxLayout()
         bottom_row_layout.setContentsMargins(0, 0, 0, 0)
         self.prompt_panel = PromptPanel("Rewrite")
@@ -40,7 +43,6 @@ class RewriteTab(QWidget):
         bottom_row_layout.addWidget(self.prompt_panel)
         bottom_row_layout.addStretch()
         layout.addLayout(bottom_row_layout)
-        layout.addStretch()
 
     def set_selected_text(self, text: str):
         """Update the displayed selection text."""
