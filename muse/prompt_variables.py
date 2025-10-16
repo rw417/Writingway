@@ -125,13 +125,55 @@ class ProjectVariableManager(PromptVariableManager):
         project_tree = getattr(project_window, 'project_tree', None)
         
         if right_stack:
-            # POV settings
-            self.register_collector('pov', 
-                lambda: getattr(right_stack.pov_combo, 'currentText', lambda: "")())
-            self.register_collector('pov_character', 
-                lambda: getattr(right_stack.pov_character_combo, 'currentText', lambda: "")())
-            self.register_collector('tense', 
-                lambda: getattr(right_stack.tense_combo, 'currentText', lambda: "")())
+            # POV settings - pull from active scene's structure if available
+            def get_pov():
+                try:
+                    current_item = getattr(project_window.project_tree, 'tree', None)
+                    if current_item and hasattr(current_item, 'currentItem'):
+                        item = current_item.currentItem()
+                        if item and project_window.project_tree.get_item_level(item) >= 2:
+                            hierarchy = project_window.get_item_hierarchy(item)
+                            node = project_window.model._get_node_by_hierarchy(hierarchy)
+                            if node and "pov" in node:
+                                return node["pov"]
+                    # Fall back to combo box
+                    return getattr(right_stack.pov_combo, 'currentText', lambda: "")()
+                except Exception:
+                    return getattr(right_stack.pov_combo, 'currentText', lambda: "")()
+            
+            def get_pov_character():
+                try:
+                    current_item = getattr(project_window.project_tree, 'tree', None)
+                    if current_item and hasattr(current_item, 'currentItem'):
+                        item = current_item.currentItem()
+                        if item and project_window.project_tree.get_item_level(item) >= 2:
+                            hierarchy = project_window.get_item_hierarchy(item)
+                            node = project_window.model._get_node_by_hierarchy(hierarchy)
+                            if node and "pov_character" in node:
+                                return node["pov_character"]
+                    # Fall back to combo box
+                    return getattr(right_stack.pov_character_combo, 'currentText', lambda: "")()
+                except Exception:
+                    return getattr(right_stack.pov_character_combo, 'currentText', lambda: "")()
+            
+            def get_tense():
+                try:
+                    current_item = getattr(project_window.project_tree, 'tree', None)
+                    if current_item and hasattr(current_item, 'currentItem'):
+                        item = current_item.currentItem()
+                        if item and project_window.project_tree.get_item_level(item) >= 2:
+                            hierarchy = project_window.get_item_hierarchy(item)
+                            node = project_window.model._get_node_by_hierarchy(hierarchy)
+                            if node and "tense" in node:
+                                return node["tense"]
+                    # Fall back to combo box
+                    return getattr(right_stack.tense_combo, 'currentText', lambda: "")()
+                except Exception:
+                    return getattr(right_stack.tense_combo, 'currentText', lambda: "")()
+            
+            self.register_collector('pov', get_pov)
+            self.register_collector('pov_character', get_pov_character)
+            self.register_collector('tense', get_tense)
             
             # Action beats
             self.register_collector('sceneBeat', 

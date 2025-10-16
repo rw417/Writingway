@@ -114,7 +114,10 @@ def send_prompt_with_ui_integration(
     if hasattr(controller, "right_stack"):
         preview_text = controller.right_stack.preview_text
         preview_text.clear()
-        controller.right_stack.send_button.setEnabled(False)
+        try:
+            controller.right_stack.update_send_button_state()
+        except Exception:
+            controller.right_stack.send_button.setEnabled(False)
         preview_text.setReadOnly(True)
 
     QApplication.processEvents()
@@ -133,7 +136,11 @@ def send_prompt_with_ui_integration(
 
     def _on_cleanup():
         if preview_text is not None and hasattr(controller, "right_stack"):
-            controller.right_stack.send_button.setEnabled(True)
+            # Let RightStack enforce send button enabled state based on current inputs
+            try:
+                controller.right_stack.update_send_button_state()
+            except Exception:
+                controller.right_stack.send_button.setEnabled(False)
             preview_text.setReadOnly(False)
 
     start_llm_stream(
@@ -225,9 +232,12 @@ def stop_llm_worker(controller):
             logging.debug("Calling WWApiAggregator.interrupt()")
             WWApiAggregator.interrupt()
         
-        # Re-enable UI elements
+        # Re-enable UI elements and let RightStack update send button state correctly
         if hasattr(controller, 'right_stack'):
-            controller.right_stack.send_button.setEnabled(True)
+            try:
+                controller.right_stack.update_send_button_state()
+            except Exception:
+                controller.right_stack.send_button.setEnabled(True)
             controller.right_stack.preview_text.setReadOnly(False)
         
         logging.debug("Calling cleanup_llm_worker")
@@ -246,7 +256,10 @@ def handle_llm_completion(controller, preview_text_widget):
         preview_text_widget: The QTextEdit widget to display results
     """
     if hasattr(controller, 'right_stack'):
-        controller.right_stack.send_button.setEnabled(True)
+        try:
+            controller.right_stack.update_send_button_state()
+        except Exception:
+            controller.right_stack.send_button.setEnabled(True)
         controller.right_stack.preview_text.setReadOnly(False)
     
     raw_text = preview_text_widget.toPlainText()

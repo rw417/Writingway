@@ -7,10 +7,13 @@ from muse.prompt_panel import PromptPanel
 _ = globals().get('_', lambda s: s)
 
 
-class SummarizeTab(QWidget):
-    """Separate module for the Summarize tab."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
+class ChapterSummaryPanel(QWidget):
+    """Panel for chapter summary generation with LLM controls."""
+
+    def __init__(self, parent_controller, tint_color):
+        super().__init__()
+        self.controller = parent_controller
+        self.tint_color = tint_color
         self._build_ui()
 
     def _build_ui(self):
@@ -18,7 +21,7 @@ class SummarizeTab(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        summary_box = QLabel(_("Summarize Current Scene"))
+        summary_box = QLabel(_("Full chapter summary feature under development. Summarize scenes individually for now."))
         summary_box.setAlignment(Qt.AlignCenter)
         summary_box.setStyleSheet("QLabel { border: 1px solid #888; padding: 8px; border-radius:4px; }")
         layout.addWidget(summary_box)

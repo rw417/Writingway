@@ -8,12 +8,13 @@ from PyQt5.QtWidgets import QStyle, QStyleOptionTab
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QVariant
 from settings.theme_manager import ThemeManager
-from .summary_controller import SummaryController, SummaryMode
-from .summary_model import SummaryModel
+# from .summary_controller import SummaryController, SummaryMode
+# from .summary_model import SummaryModel
 from muse.prompt_panel import PromptPanel
 from muse.prompt_preview_dialog import PromptPreviewDialog
 from muse.prompt_variables import get_prompt_variables
 from project_window.llm_panel import LLMPanel
+from project_window.chapter_summary_panel import ChapterSummaryPanel
 from copy import deepcopy
 
 # gettext '_' fallback for static analysis / standalone edits
@@ -28,19 +29,12 @@ class RightStack(QWidget):
         self.tint_color = tint_color
         self.stack = QStackedWidget()
         self.scene_editor = controller.scene_editor
-        self.summary_controller = SummaryController(
-            SummaryModel(model.project_name),
-            self,
-            controller.project_tree
-        )
-        self.summary_controller.progress_updated.connect(self._update_progress)
-        
+
         # Temporary prompt config management
         self._suspend_temp_sync = False
-        
+
         self.init_ui()
         self.project_tree = controller.project_tree
-        self.project_tree.tree.currentItemChanged.connect(self._update_summary_mode_visibility)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -52,64 +46,70 @@ class RightStack(QWidget):
         self.stack.addWidget(self.summary_panel)
         self.stack.addWidget(self.llm_panel)
 
+    def _on_tab_changed(self, index):
+        """Called by LLMPanel when the prompt tab widget changes tabs."""
+        try:
+            if index == getattr(self, 'write_tab_index', None):
+                mode = 'write'
+            elif index == getattr(self, 'rewrite_tab_index', None):
+                mode = 'rewrite'
+            else:
+                mode = 'summarize'
+            self._set_active_mode(mode)
+        except Exception:
+            pass
+
     def create_summary_panel(self):
-        panel = QWidget()
-        layout = QHBoxLayout(panel)
-
-        self.summary_prompt_panel = PromptPanel("Summary")
-        self.summary_prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.summary_prompt_panel.setMaximumWidth(250)
-        layout.addWidget(self.summary_prompt_panel)
-
-        self.summary_preview_button = QPushButton()
-        self.summary_preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg", self.tint_color))
-        self.summary_preview_button.setToolTip(_("Preview the final prompt"))
-        self.summary_preview_button.clicked.connect(self.summary_controller.preview_summary)
-        layout.addWidget(self.summary_preview_button)
-
-        self.summary_mode_combo = QComboBox()
-        # Populate combo box with enum values and localized display names
-        for mode in SummaryMode:
-            self.summary_mode_combo.addItem(mode.display_name(), QVariant(mode))
-        self.summary_mode_combo.setToolTip(_("Select summary generation mode"))
-        self.summary_mode_combo.setVisible(False)  # Hidden by default
-        layout.addWidget(self.summary_mode_combo)
-
-        self.summary_start_button = QPushButton()
-        self.summary_start_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg", self.tint_color))
-        self.summary_start_button.setToolTip(_("Start summary generation"))
-        self.summary_start_button.clicked.connect(self._start_summary)
-        layout.addWidget(self.summary_start_button)
-
-        self.delete_summary_button = QPushButton()
-        self.delete_summary_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/trash.svg", self.tint_color))
-        self.delete_summary_button.setToolTip(_("Delete current summary"))
-        self.delete_summary_button.clicked.connect(self.summary_controller.delete_summary)
-        layout.addWidget(self.delete_summary_button)
-
+        panel = ChapterSummaryPanel(self.controller, self.tint_color)
+        self.chapter_summary_panel = panel
         return panel
-
-    def _start_summary(self):
-        """Determine whether to create chapter or act summary based on selection."""
-        current_item = self.project_tree.tree.currentItem()
-        if not current_item:
-            return
-        level = self.project_tree.get_item_level(current_item)
-        if level == 0:
-            self.summary_controller.create_act_summary()
-        elif level == 1:
-            self.summary_controller.create_chapter_summary()
-
-    def _update_summary_mode_visibility(self, current, previous):
-        """Show/hide summary mode combo based on whether an Act is selected."""
-        if not current:
-            self.summary_mode_combo.setVisible(False)
-            return
-        level = self.project_tree.get_item_level(current)
-        self.summary_mode_combo.setVisible(level == 0)
 
     def create_llm_panel(self):
         return LLMPanel(self)
+
+    def prepare_chapter_view(self):
+        """Move shared preview and controls into the chapter panel and use the chapter prompt panel."""
+        try:
+            if not hasattr(self, 'chapter_summary_panel') or not hasattr(self, 'preview_stack'):
+                return
+            layout = self.chapter_summary_panel.preview_placeholder.layout()
+            if layout is None:
+                layout = QVBoxLayout(self.chapter_summary_panel.preview_placeholder)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+
+            # Reparent preview stack and controls
+            self._move_widget_to_layout(self.preview_stack, layout, 0)
+            # Hide preview actions in chapter view
+            try:
+                if getattr(self, 'preview_actions_widget', None):
+                    self.preview_actions_widget.setParent(None)
+            except Exception:
+                pass
+            if getattr(self, 'prompt_controls_widget', None):
+                self._move_widget_to_layout(self.prompt_controls_widget, layout, 1)
+
+            # Use the chapter prompt panel for summarize mode
+            if hasattr(self, 'prompt_modes') and 'summarize' in self.prompt_modes:
+                self._orig_summarize_panel = self.prompt_modes['summarize']['prompt_panel']
+                self.prompt_modes['summarize']['prompt_panel'] = self.chapter_summary_panel.prompt_panel
+            self._set_active_mode('summarize')
+        except Exception as e:
+            print(f"prepare_chapter_view error: {e}")
+
+    def prepare_llm_view(self):
+        """Restore shared widgets to the LLM panel and the original summarize prompt panel."""
+        try:
+            if hasattr(self, '_orig_summarize_panel') and hasattr(self, 'prompt_modes') and 'summarize' in self.prompt_modes:
+                self.prompt_modes['summarize']['prompt_panel'] = self._orig_summarize_panel
+                delattr(self, '_orig_summarize_panel')
+            # Re-embed into current active tab (default to write)
+            target_mode = getattr(self, 'active_mode', 'write')
+            if target_mode not in ('write', 'rewrite', 'summarize'):
+                target_mode = 'write'
+            self._embed_shared_widgets(target_mode)
+        except Exception as e:
+            print(f"prepare_llm_view error: {e}")
 
     def add_combo(self, layout, label_text, items, callback):
         combo = QComboBox()
@@ -219,7 +219,7 @@ class RightStack(QWidget):
 
         # preview actions (apply + include) are not visible for summarize
         if getattr(self, 'preview_actions_widget', None):
-            if mode != 'summarize':
+            if mode not in ('summarize', 'chapter'):
                 self.preview_actions_widget.setVisible(True)
                 self._move_widget_to_layout(self.preview_actions_widget, layout, 1)
             else:
@@ -382,20 +382,6 @@ class RightStack(QWidget):
             'extra_context': None,
         }
 
-    def get_include_block_text(self) -> str:
-        if not self.include_prompt_checkbox.isChecked():
-            return ""
-        return self._get_user_input_for_mode(self.active_mode)
-
-    def _on_tab_changed(self, index):
-        if index == self.write_tab_index:
-            mode = 'write'
-        elif index == getattr(self, 'rewrite_tab_index', -1):
-            mode = 'rewrite'
-        else:
-            mode = 'summarize'
-        self._set_active_mode(mode)
-
     def _set_active_mode(self, mode):
         self.active_mode = mode
         is_prompt_mode = mode in self.prompt_modes
@@ -417,17 +403,25 @@ class RightStack(QWidget):
             pass
 
         if mode == 'write':
+            self.include_prompt_checkbox.setVisible(True)
             self.include_prompt_checkbox.setText(_("Include Action Beats"))
             self.include_prompt_checkbox.setEnabled(True)
             self.include_prompt_checkbox.setToolTip(_("Include the text from the Action Beats field in the scene text"))
         elif mode == 'rewrite':
-            self.include_prompt_checkbox.setText(_("Include Selected Text"))
-            self.include_prompt_checkbox.setEnabled(True)
-            self.include_prompt_checkbox.setToolTip(_("Include the original selection when applying the preview"))
-        else:
+            # Hide the checkbox for since it doesn't apply
+            self.include_prompt_checkbox.setVisible(False)
+            # self.include_prompt_checkbox.setText(_("Include Selected Text"))
+            self.include_prompt_checkbox.setEnabled(False)
+            # self.include_prompt_checkbox.setToolTip(_("Include the original selection when applying the preview"))
+        elif mode == 'summarize':
+            # self.include_prompt_checkbox.setText(_("Include Action Beats"))
+            self.include_prompt_checkbox.setVisible(False)
+            self.include_prompt_checkbox.setEnabled(False)
+            # self.include_prompt_checkbox.setToolTip(_("Select a prompt tab to enable this option"))
+        else:  # chapter mode
             self.include_prompt_checkbox.setText(_("Include Action Beats"))
             self.include_prompt_checkbox.setEnabled(False)
-            self.include_prompt_checkbox.setToolTip(_("Select a prompt tab to enable this option"))
+            self.include_prompt_checkbox.setToolTip(_("Not applicable on chapter panel"))
 
         if is_prompt_mode:
             self._ensure_state_initialized(mode)
@@ -637,18 +631,68 @@ class RightStack(QWidget):
                 return
             
             self.preview_editable_widget.set_prompt_config(state['temporary_prompt_config'])
-            
-            # Set to Tweaks tab by default
-            self.tweak_tab_widget.setCurrentIndex(0)
-            
-            # Hide other views
+
+            # Show the tweaks widget
             self.preview_button.setChecked(False)
             self._set_bottom_row_dropdowns_enabled(True)
-            
-            self.preview_stack.setCurrentWidget(self.tweak_tab_widget)
+            self.preview_stack.setCurrentWidget(self.tweaks_widget)
         else:
             # Hide and return to default view
             self.preview_stack.setCurrentWidget(self.preview_text)
+
+    def toggle_edit_prompt(self):
+        """Toggle the editable prompt view (separate from tweaks)."""
+        state = self._get_state()
+        if not state:
+            try:
+                if hasattr(self, 'edit_prompt_button'):
+                    self.edit_prompt_button.setChecked(False)
+            except Exception:
+                pass
+            return
+
+        if getattr(self, 'edit_prompt_button', None) and self.edit_prompt_button.isChecked():
+            # Show editable prompt view
+            if not state['temporary_prompt_config']:
+                self.reset_temporary_config(self.active_mode)
+
+            if not state['temporary_prompt_config']:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, _("No Prompt Selected"), 
+                                  _("Please select a prompt first."))
+                self.edit_prompt_button.setChecked(False)
+                return
+
+            self.preview_editable_widget.set_prompt_config(state['temporary_prompt_config'])
+            self.preview_stack.setCurrentWidget(self.preview_editable_widget)
+        else:
+            self.preview_stack.setCurrentWidget(self.preview_text)
+
+    def update_send_button_state(self):
+        """Enable/disable send button based on active mode required input presence."""
+        try:
+            if not hasattr(self, 'send_button') or not self.send_button:
+                return
+
+            if self.active_mode == 'rewrite':
+                text_present = False
+                try:
+                    text_present = bool(self.rewrite_tab.get_selected_text())
+                except Exception:
+                    text_present = False
+                self.send_button.setEnabled(text_present)
+            elif self.active_mode == 'write':
+                beats_present = False
+                try:
+                    beats_present = bool(getattr(self, 'prompt_input') and self.prompt_input.toPlainText().strip())
+                except Exception:
+                    beats_present = False
+                self.send_button.setEnabled(beats_present)
+            else:
+                # Other modes allow send by default
+                self.send_button.setEnabled(True)
+        except Exception:
+            pass
     
     def toggle_preview(self):
         """Toggle the uneditable preview widget."""
@@ -732,3 +776,173 @@ class RightStack(QWidget):
                 state['temporary_prompt_config'] = edited_config
 
         self.controller.send_prompt()
+    
+    def _generate_chapter_summaries(self):
+        """Generate summaries for scenes in the current chapter."""
+        if not hasattr(self, 'chapter_summary_panel'):
+            return
+        
+        current_item = self.project_tree.tree.currentItem()
+        if not current_item:
+            return
+        
+        level = self.project_tree.get_item_level(current_item)
+        if level != 1:  # Must be a chapter
+            return
+        
+        # Get prompt configuration
+        prompt_config = self.chapter_summary_panel.prompt_panel.get_prompt()
+        if not prompt_config or not prompt_config.get("name"):
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, _("No Prompt"), _("Please select a summary prompt."))
+            return
+        
+        overwrite = self.chapter_summary_panel.overwrite_checkbox.isChecked()
+        
+        # Collect scenes to summarize
+        scenes_to_summarize = []
+        for i in range(current_item.childCount()):
+            scene_item = current_item.child(i)
+            hierarchy = self.controller.get_item_hierarchy(scene_item)
+            node = self.model._get_node_by_hierarchy(hierarchy)
+            
+            if node:
+                # Check if we should process this scene
+                if overwrite or not node.get("summary", "").strip():
+                    scenes_to_summarize.append({
+                        'item': scene_item,
+                        'hierarchy': hierarchy,
+                        'node': node
+                    })
+        
+        if not scenes_to_summarize:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, _("No Scenes"), _("All scenes already have summaries. Check 'Overwrite Existing Scene Summaries' to regenerate."))
+            return
+        
+        # Start generation process
+        self._start_batch_summary_generation(scenes_to_summarize, prompt_config)
+    
+    def _start_batch_summary_generation(self, scenes, prompt_config):
+        """Start generating summaries for multiple scenes."""
+        from settings.llm_worker import LLMWorker
+        from muse.jinja_renderer import render_prompt
+        
+        if not scenes:
+            return
+        
+        # Store state for batch processing
+        self._batch_scenes = scenes
+        self._batch_current_index = 0
+        self._batch_prompt_config = prompt_config
+        self._batch_worker = None
+        
+        # Process first scene
+        self._process_next_batch_scene()
+    
+    def _process_next_batch_scene(self):
+        """Process the next scene in the batch."""
+        if self._batch_current_index >= len(self._batch_scenes):
+            # All done
+            self._batch_scenes = []
+            self._batch_current_index = 0
+            self._batch_prompt_config = None
+            if self._batch_worker:
+                self._batch_worker = None
+            
+            # Refresh the chapter summary display
+            self.controller.load_current_item_content()
+            return
+        
+        from settings.llm_worker import LLMWorker
+        from muse.jinja_renderer import render_prompt
+        from muse.prompt_variables import get_prompt_variables
+        
+        scene_data = self._batch_scenes[self._batch_current_index]
+        hierarchy = scene_data['hierarchy']
+        node = scene_data['node']
+        
+        # Load scene content
+        content = self.model.load_scene_content(hierarchy)
+        if not content:
+            # Skip this scene and move to next
+            self._batch_current_index += 1
+            self._process_next_batch_scene()
+            return
+        
+        # Get POV/tense from scene node
+        pov = node.get("pov", "Third Person")
+        pov_character = node.get("pov_character", "")
+        tense = node.get("tense", "Past Tense")
+        
+        # Build variables for this scene
+        variables = {
+            'pov': pov,
+            'pov_character': pov_character,
+            'tense': tense,
+            'scene': {
+                'fullText': content
+            }
+        }
+        
+        # Render prompt
+        try:
+            final_prompt = render_prompt(self._batch_prompt_config.get('text', ''), variables)
+        except Exception as e:
+            print(f"Error rendering prompt for scene {hierarchy}: {e}")
+            self._batch_current_index += 1
+            self._process_next_batch_scene()
+            return
+        
+        # Create worker
+        overrides = {
+            "provider": self._batch_prompt_config.get("provider", ""),
+            "model": self._batch_prompt_config.get("model", ""),
+            "max_tokens": self._batch_prompt_config.get("max_tokens", 2000),
+            "temperature": self._batch_prompt_config.get("temperature", 1.0),
+        }
+        
+        self._batch_worker = LLMWorker(final_prompt, overrides)
+        self._batch_worker.data_received.connect(lambda text: self._on_batch_scene_summary_received(text, scene_data))
+        self._batch_worker.finished.connect(self._on_batch_scene_finished)
+        self._batch_worker.start()
+    
+    def _on_batch_scene_summary_received(self, text, scene_data):
+        """Handle summary text received for a scene."""
+        node = scene_data['node']
+        if 'summary' not in node:
+            node['summary'] = ""
+        node['summary'] += text
+    
+    def _on_batch_scene_finished(self):
+        """Handle completion of one scene summary."""
+        # Save the summary
+        if self._batch_current_index < len(self._batch_scenes):
+            scene_data = self._batch_scenes[self._batch_current_index]
+            self.model.save_structure()
+        
+        # Move to next scene
+        self._batch_current_index += 1
+        self._process_next_batch_scene()
+    
+    def _stop_chapter_summary_generation(self):
+        """Stop the batch summary generation."""
+        if hasattr(self, '_batch_worker') and self._batch_worker:
+            if self._batch_worker.isRunning():
+                self._batch_worker.terminate()
+                self._batch_worker.wait()
+            self._batch_worker = None
+        
+        self._batch_scenes = []
+        self._batch_current_index = 0
+        self._batch_prompt_config = None
+    
+    def _preview_chapter_summary_prompt(self):
+        """Preview the prompt that will be used for scene summaries."""
+        # TODO: Implement preview functionality
+        pass
+    
+    def _refresh_chapter_summary_prompt(self):
+        """Refresh the prompt selection."""
+        if hasattr(self, 'chapter_summary_panel'):
+            self.chapter_summary_panel.prompt_panel.reload_prompts()

@@ -124,12 +124,14 @@ class LLMPanel(QWidget):
             pass
         self.preview_stack.addWidget(self.preview_text)
 
-        self.tweak_tab_widget = QTabWidget()
+        # Use separate widgets for tweaks and editable prompt (no tab widget)
         self.tweaks_widget = TweaksWidget()
         self.preview_editable_widget = PreviewEditableWidget()
-        self.tweak_tab_widget.addTab(self.tweaks_widget, _("Tweaks"))
-        self.tweak_tab_widget.addTab(self.preview_editable_widget, _("Edit Prompt"))
-        self.preview_stack.addWidget(self.tweak_tab_widget)
+        self.preview_stack.addWidget(self.tweaks_widget)
+        self.preview_stack.addWidget(self.preview_editable_widget)
+
+        # Default to showing the tweaks widget instead of raw LLM output
+        self.preview_stack.setCurrentWidget(self.tweaks_widget)
 
         QTimer.singleShot(100, self.parent_stack._connect_edit_signals)
 
@@ -177,6 +179,16 @@ class LLMPanel(QWidget):
         self.tweak_prompt_button.setCheckable(True)
         self.tweak_prompt_button.clicked.connect(self.parent_stack.toggle_tweak_prompt)
         prompt_controls_layout.addWidget(self.tweak_prompt_button)
+
+        # Button to open the editable prompt view (previously a tab)
+        self.edit_prompt_button = QPushButton()
+        self.edit_prompt_button.setIcon(
+            ThemeManager.get_tinted_icon("assets/icons/edit.svg", self.tint_color)
+        )
+        self.edit_prompt_button.setToolTip(_("Edit Prompt"))
+        self.edit_prompt_button.setCheckable(True)
+        self.edit_prompt_button.clicked.connect(self.parent_stack.toggle_edit_prompt)
+        prompt_controls_layout.addWidget(self.edit_prompt_button)
 
         self.preview_button = QPushButton()
         self.preview_button.setIcon(
@@ -251,14 +263,9 @@ class LLMPanel(QWidget):
         self.write_tab_index = self.prompt_tab_widget.addTab(beat_widget, _("Beat"))
 
         self.rewrite_tab = RewriteTab(self.parent_stack)
-        rewrite_container = QWidget()
-        rewrite_layout = QVBoxLayout(rewrite_container)
-        rewrite_layout.setContentsMargins(6, 6, 6, 6)
-        rewrite_layout.setSpacing(6)
-        rewrite_layout.addWidget(self.rewrite_tab)
-        self.tab_layouts['rewrite'] = rewrite_layout
+        self.tab_layouts['rewrite'] = self.rewrite_tab.layout()
         self.rewrite_tab_index = self.prompt_tab_widget.addTab(
-            rewrite_container, _("Rewrite")
+            self.rewrite_tab, _("Rewrite")
         )
 
         summarize_widget = SummarizeTab(self)
@@ -331,9 +338,9 @@ class LLMPanel(QWidget):
         parent.scene_summary_edit = self.scene_summary_edit
         parent.preview_stack = self.preview_stack
         parent.preview_text = self.preview_text
-        parent.tweak_tab_widget = self.tweak_tab_widget
         parent.tweaks_widget = self.tweaks_widget
         parent.preview_editable_widget = self.preview_editable_widget
+        parent.edit_prompt_button = self.edit_prompt_button
         parent.preview_uneditable_widget = self.preview_uneditable_widget
         parent.preview_actions_widget = self.preview_actions_widget
         parent.apply_button = self.apply_button

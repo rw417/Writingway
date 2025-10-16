@@ -297,7 +297,12 @@ class ProjectWindow(QMainWindow):
     def setup_connections(self):
         self.focus_mode_shortcut = QShortcut(QKeySequence("F11"), self)
         self.focus_mode_shortcut.activated.connect(self.open_focus_mode)
-        self.right_stack.summary_controller.progress_updated.connect(self.right_stack._update_progress)
+        # self.right_stack.summary_controller.progress_updated.connect(self.right_stack._update_progress)
+        
+        # Connect scene summary edit to auto-save
+        if hasattr(self.right_stack, 'scene_summary_edit'):
+            self.right_stack.scene_summary_edit.textChanged.connect(self._on_scene_summary_changed)
+        
         # Also ensure we restore cursor when editor gains focus
         # (in case focusChanged didn't fire for some reason)
         try:
@@ -514,6 +519,8 @@ class ProjectWindow(QMainWindow):
         else:
             self.model.settings["global_pov_character"] = value
             self.model.save_settings()
+            # Also save to current scene if on a scene page
+            self._save_scene_pov_tense()
         self.update_setting_tooltips()
 
     def add_character_to_compendium(self, name, description):
@@ -724,6 +731,8 @@ class ProjectWindow(QMainWindow):
         editor = self.scene_editor.editor
         hierarchy = self.get_item_hierarchy(current)
         if level >= 2:
+            # Scene level - load content and summary (editor is editable)
+            editor.setReadOnly(False)
             content = self.model.load_scene_content(hierarchy)
             if content and content.lstrip().startswith("<"):
                 editor.setHtml(content)
@@ -732,9 +741,42 @@ class ProjectWindow(QMainWindow):
             else:
                 editor.clear()
             editor.setPlaceholderText(_("Enter scene content..."))
+            
+            # Load scene summary into scene_summary_edit (block signals to avoid auto-save during load)
+            node = self.model._get_node_by_hierarchy(hierarchy)
+            if node and hasattr(self.right_stack, 'scene_summary_edit'):
+                scene_summary = node.get("summary", "")
+                self.right_stack.scene_summary_edit.blockSignals(True)
+                self.right_stack.scene_summary_edit.setPlainText(scene_summary)
+                self.right_stack.scene_summary_edit.blockSignals(False)
+            
+            # Load and set POV/tense combo boxes from scene data
+            self._load_scene_pov_tense(node)
+            
+            # Show POV/tense controls on scene pages
+            if hasattr(self.right_stack, 'top_control_container'):
+                self.right_stack.top_control_container.setVisible(True)
+            
             self.right_stack.stack.setCurrentIndex(1)
+        elif level == 1:
+            # Chapter level - combine scene summaries (read-only), hide POV/tense combos
+            editor.clear()
+            editor.setReadOnly(True)
+            combined_summary = self._build_chapter_summary(current)
+            if combined_summary:
+                editor.setPlainText(combined_summary)
+            else:
+                editor.setPlaceholderText(_("No scene summaries available for {}").format(current.text(0)))
+            
+            # Hide POV/tense controls on chapter pages
+            if hasattr(self.right_stack, 'top_control_container'):
+                self.right_stack.top_control_container.setVisible(False)
+            
+            self.right_stack.stack.setCurrentIndex(0)
         else:
+            # Act level - load summary normally (editor is editable)
             content = self.model.load_summary(hierarchy)
+            editor.setReadOnly(False)
             if content and content.lstrip().startswith("<"):
                 editor.setHtml(content)
             elif content:
@@ -742,9 +784,95 @@ class ProjectWindow(QMainWindow):
             else:
                 editor.clear()
             editor.setPlaceholderText(_("Enter summary for {}...").format(current.text(0)))
+            
+            # Hide POV/tense controls on act pages
+            if hasattr(self.right_stack, 'top_control_container'):
+                self.right_stack.top_control_container.setVisible(False)
+            
             self.right_stack.stack.setCurrentIndex(0)
         self.update_setting_tooltips()
         self.scene_editor.update_toolbar_state()
+    
+    def _build_chapter_summary(self, chapter_item):
+        """Build a combined summary from all scene summaries in a chapter."""
+        if not chapter_item or chapter_item.childCount() == 0:
+            return ""
+        
+        summary_parts = []
+        for i in range(chapter_item.childCount()):
+            scene_item = chapter_item.child(i)
+            scene_name = scene_item.text(0).strip()
+            hierarchy = self.get_item_hierarchy(scene_item)
+            node = self.model._get_node_by_hierarchy(hierarchy)
+            
+            if node:
+                scene_summary = node.get("summary", "").strip()
+                if scene_summary:
+                    summary_parts.append(f"{scene_name}\n{scene_summary}\n")
+        
+        return "\n".join(summary_parts) if summary_parts else ""
+    
+    def _load_scene_pov_tense(self, node):
+        """Load POV and tense from scene node into combo boxes, or save current values if not set."""
+        if not node or not hasattr(self.right_stack, 'pov_combo'):
+            return
+        
+        # Block signals to prevent triggering saves during load
+        self.right_stack.pov_combo.blockSignals(True)
+        self.right_stack.pov_character_combo.blockSignals(True)
+        self.right_stack.tense_combo.blockSignals(True)
+        
+        try:
+            # Get current combo box values
+            current_pov = self.right_stack.pov_combo.currentText()
+            current_pov_char = self.right_stack.pov_character_combo.currentText()
+            current_tense = self.right_stack.tense_combo.currentText()
+            
+            # Load from node or use current values
+            pov = node.get("pov", current_pov)
+            pov_character = node.get("pov_character", current_pov_char)
+            tense = node.get("tense", current_tense)
+            
+            # Set combo boxes
+            pov_index = self.right_stack.pov_combo.findText(pov)
+            if pov_index >= 0:
+                self.right_stack.pov_combo.setCurrentIndex(pov_index)
+            
+            pov_char_index = self.right_stack.pov_character_combo.findText(pov_character)
+            if pov_char_index >= 0:
+                self.right_stack.pov_character_combo.setCurrentIndex(pov_char_index)
+            
+            tense_index = self.right_stack.tense_combo.findText(tense)
+            if tense_index >= 0:
+                self.right_stack.tense_combo.setCurrentIndex(tense_index)
+            
+            # If values weren't in node, save current values
+            if "pov" not in node or "pov_character" not in node or "tense" not in node:
+                node["pov"] = self.right_stack.pov_combo.currentText()
+                node["pov_character"] = self.right_stack.pov_character_combo.currentText()
+                node["tense"] = self.right_stack.tense_combo.currentText()
+                self.model.save_structure()
+        finally:
+            # Unblock signals
+            self.right_stack.pov_combo.blockSignals(False)
+            self.right_stack.pov_character_combo.blockSignals(False)
+            self.right_stack.tense_combo.blockSignals(False)
+    
+    def _save_scene_pov_tense(self):
+        """Save current POV and tense values to the active scene's structure."""
+        current_item = self.project_tree.tree.currentItem()
+        if not current_item:
+            return
+        
+        level = self.project_tree.get_item_level(current_item)
+        if level >= 2:  # Only for scenes
+            hierarchy = self.get_item_hierarchy(current_item)
+            node = self.model._get_node_by_hierarchy(hierarchy)
+            if node:
+                node["pov"] = self.right_stack.pov_combo.currentText()
+                node["pov_character"] = self.right_stack.pov_character_combo.currentText()
+                node["tense"] = self.right_stack.tense_combo.currentText()
+                self.model.save_structure()
 
     def get_item_hierarchy(self, item):
         hierarchy = []
@@ -781,13 +909,17 @@ class ProjectWindow(QMainWindow):
             QMessageBox.warning(self, _("Manual Save"), _("There is no content to save."))
             return
         hierarchy = self.get_item_hierarchy(current_item)
+        level = self.project_tree.get_item_level(current_item)
         
         type_str = 'Scene'
-        if self.project_tree.get_item_level(current_item) < 2:
+        if level < 2:
             type_str = 'Summary'
             filepath = self.model.save_summary_to_file(hierarchy, content)
         else:
             filepath = self.model.save_scene(hierarchy, content)
+            # Also save scene summary if at scene level
+            if hasattr(self.right_stack, 'scene_summary_edit'):
+                self._save_scene_summary(hierarchy)
         if filepath:
             self.update_save_status(_("{} manually saved").format(type_str))
             self.model.unsaved_changes = False
@@ -803,8 +935,32 @@ class ProjectWindow(QMainWindow):
         hierarchy = self.get_item_hierarchy(current_item)
         filepath = self.model.save_scene(hierarchy, content, expected_project_name=self.model.project_name)
         if filepath:
+            # Also save scene summary
+            if hasattr(self.right_stack, 'scene_summary_edit'):
+                self._save_scene_summary(hierarchy)
             self.update_save_status(_("Scene autosaved"))
             self.model.unsaved_changes = False
+    
+    def _save_scene_summary(self, hierarchy):
+        """Save the scene summary text to the structure."""
+        if not hasattr(self.right_stack, 'scene_summary_edit'):
+            return
+        
+        summary_text = self.right_stack.scene_summary_edit.toPlainText().strip()
+        node = self.model._get_node_by_hierarchy(hierarchy)
+        if node is not None:
+            node["summary"] = summary_text
+            self.model.save_structure()
+
+    def _on_scene_summary_changed(self):
+        """Called when scene summary text changes - auto-save if needed."""
+        current_item = self.project_tree.tree.currentItem()
+        if not current_item:
+            return
+        level = self.project_tree.get_item_level(current_item)
+        if level >= 2:  # Only for scenes
+            hierarchy = self.get_item_hierarchy(current_item)
+            self._save_scene_summary(hierarchy)
 
     def update_save_status(self, message):
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -859,12 +1015,14 @@ class ProjectWindow(QMainWindow):
             else:
                 combo = self.right_stack.pov_combo
                 combo.blockSignals(True)
-                combo.setCurrentText(self.model.settings["global_pov"])
+                combo.setCurrentIndex(0)
                 combo.blockSignals(False)
                 return
         self.model.settings["global_pov"] = value
-        self.update_setting_tooltips()
         self.model.save_settings()
+        # Also save to current scene if on a scene page
+        self._save_scene_pov_tense()
+        self.update_setting_tooltips()
 
     def handle_tense_change(self, index):
         value = self.right_stack.tense_combo.currentText()
@@ -880,6 +1038,8 @@ class ProjectWindow(QMainWindow):
         self.model.settings["global_tense"] = value
         self.update_setting_tooltips()
         self.model.save_settings()
+        # Also save to current scene if on a scene page
+        self._save_scene_pov_tense()
 
     def update_setting_tooltips(self):
         self.right_stack.pov_combo.setToolTip(_("POV: {}").format(self.model.settings['global_pov']))
@@ -904,7 +1064,10 @@ class ProjectWindow(QMainWindow):
         )
 
     def handle_token_limit_error(self, error_msg):
-        self.right_stack.send_button.setEnabled(True)
+        try:
+            self.right_stack.update_send_button_state()
+        except Exception:
+            self.right_stack.send_button.setEnabled(True)
         current_item = self.project_tree.tree.currentItem()
         level = self.project_tree.get_item_level(current_item) if current_item else -1
         if current_item and level < 2 and current_item.data(0, Qt.UserRole).get("summary"):
@@ -912,8 +1075,8 @@ class ProjectWindow(QMainWindow):
             self.retry_with_summary(summary)
             return
         self.statusBar().showMessage(_("Generating summary to fit token limit…"))
-        self.right_stack.summary_controller.create_summary()
-        QTimer.singleShot(30000, lambda: self.retry_with_auto_summary())
+        # self.right_stack.summary_controller.create_summary()
+        # QTimer.singleShot(30000, lambda: self.retry_with_auto_summary())
 
     def retry_with_summary(self, summary):
         additional_vars = {

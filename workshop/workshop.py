@@ -182,7 +182,7 @@ class WorkshopWindow(QDialog):
         left_layout.addWidget(self.chat_input)
 
         # Buttons and Mode/Prompt Panel
-        bottomrow_layout = QHBoxLayout()
+        bottomrow_layout = QVBoxLayout()
 
         # Mode selection for FAISS vector search
         self.mode_selector = QComboBox()
@@ -193,42 +193,45 @@ class WorkshopWindow(QDialog):
         self.prompt_panel = PromptPanel("Workshop")
         self.prompt_panel.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         self.prompt_panel.setMaximumWidth(300)
-        bottomrow_layout.addWidget(self.prompt_panel)
+        workshop_prompt_layout = QHBoxLayout()
+        workshop_prompt_layout.setContentsMargins(0, 0, 0, 0)
+        workshop_prompt_layout.addWidget(self.prompt_panel)
+        bottomrow_layout.addStretch()
+        bottomrow_layout.addLayout(workshop_prompt_layout)
 
         middle_stack = QFormLayout()
-        button_row1 = QHBoxLayout()
+        button_row = QHBoxLayout()
 
         # Prompt Preview button
         self.preview_button = QPushButton()
         self.preview_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/eye.svg"))
         self.preview_button.setToolTip(_("Preview the final prompt"))
         self.preview_button.clicked.connect(self.preview_prompt)
-        button_row1.addWidget(self.preview_button)
+        button_row.addWidget(self.preview_button)
 
         # Send button
         self.send_button = QPushButton()
         self.send_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/send.svg"))
         self.send_button.clicked.connect(self.on_send_or_stop)
-        button_row1.addWidget(self.send_button)
+        button_row.addWidget(self.send_button)
 
-        button_row2 = QHBoxLayout()
 
         # Context button
         self.context_button = QPushButton()
         self.context_button.setCheckable(True)
         self.context_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/book-open.svg"))
         self.context_button.clicked.connect(self.toggle_context_panel)
-        button_row2.addWidget(self.context_button)
+        button_row.addWidget(self.context_button)
 
         # PDF RAG Button
         self.pdf_rag_btn = QPushButton()
         self.pdf_rag_btn.setIcon(ThemeManager.get_tinted_icon("assets/icons/file-text.svg"))
         self.pdf_rag_btn.setToolTip("Document Analysis (PDF/Images)")
         self.pdf_rag_btn.clicked.connect(self.open_pdf_rag_tool)
-        button_row2.addWidget(self.pdf_rag_btn)
+        button_row.addWidget(self.pdf_rag_btn)
 
-        middle_stack.addRow(button_row1)
-        middle_stack.addRow(button_row2)
+        button_row.addStretch()
+        middle_stack.addRow(button_row)
         bottomrow_layout.addLayout(middle_stack)
         bottomrow_layout.addStretch()
 

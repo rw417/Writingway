@@ -18,12 +18,8 @@ class RewriteTab(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
-
-        header = QLabel(_("Selected Text"))
-        header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(header)
 
         self.selected_text_edit = PlainTextEdit()
         self.selected_text_edit.setReadOnly(True)
@@ -31,9 +27,6 @@ class RewriteTab(QWidget):
         self.selected_text_edit.setFixedHeight(100)
         self.selected_text_edit.setFocusPolicy(Qt.NoFocus)
         layout.addWidget(self.selected_text_edit)
-
-        # push the bottom-row to the bottom
-        layout.addStretch()
 
         bottom_row_layout = QHBoxLayout()
         bottom_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -57,8 +50,3 @@ class RewriteTab(QWidget):
 
     def get_selected_text(self) -> str:
         return self.selected_text_edit.toPlainText().strip()
-
-    def set_dropdowns_enabled(self, enabled: bool):
-        self.prompt_panel.prompt_combo.setEnabled(enabled)
-        self.prompt_panel.provider_combo.setEnabled(True)
-        self.prompt_panel.model_combo.setEnabled(True)
