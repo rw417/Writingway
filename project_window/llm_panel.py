@@ -350,6 +350,11 @@ class LLMPanel(QWidget):
         parent.tab_layouts = self.tab_layouts
         parent.prompt_input = self.prompt_input
         parent.prose_prompt_panel = self.prose_prompt_panel
+        # Live update of send button when Beats input changes
+        try:
+            self.prompt_input.textChanged.connect(parent._on_prompt_input_changed)
+        except Exception:
+            pass
         parent.rewrite_tab = self.rewrite_tab
         parent.rewrite_tab_index = self.rewrite_tab_index
         parent.write_tab_index = self.write_tab_index

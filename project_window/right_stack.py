@@ -435,31 +435,106 @@ class RightStack(QWidget):
         else:
             self.custom_edits_label.setVisible(False)
 
+        # Update send button enabled state immediately when changing tabs
+        try:
+            if hasattr(self, 'send_button') and self.send_button:
+                if mode == 'rewrite':
+                    has_text = False
+                    try:
+                        has_text = bool(self.rewrite_tab.get_selected_text())
+                    except Exception:
+                        has_text = False
+                    self.send_button.setEnabled(has_text)
+                elif mode == 'write':
+                    has_beats = False
+                    try:
+                        has_beats = bool(getattr(self, 'prompt_input') and self.prompt_input.toPlainText().strip())
+                    except Exception:
+                        has_beats = False
+                    self.send_button.setEnabled(has_beats)
+                else:
+                    # Summarize and others: enable by default
+                    self.send_button.setEnabled(True)
+        except Exception:
+            pass
+
     def _on_editor_selection_changed(self):
-        if not hasattr(self, 'prompt_tab_widget') or not hasattr(self, 'rewrite_tab_index'):
+        # Always update the rewrite tab's selected-text box when the editor selection changes.
+        if not hasattr(self, 'prompt_tab_widget') or not hasattr(self, 'rewrite_tab'):
             return
 
-        has_selection = False
         selected_text = ""
         try:
             cursor = self.scene_editor.editor.textCursor()
             if cursor and cursor.hasSelection():
-                has_selection = True
                 fragment = cursor.selection()
                 selected_text = fragment.toPlainText()
         except Exception:
             pass
 
-        if hasattr(self, 'rewrite_tab') and self.rewrite_tab:
-            if has_selection:
-                self.rewrite_tab.set_selected_text(selected_text)
+        # Populate the rewrite tab's selection area with the latest selection (or clear it).
+        try:
+            if self.rewrite_tab:
+                if selected_text:
+                    self.rewrite_tab.set_selected_text(selected_text)
+                else:
+                    self.rewrite_tab.clear_selected_text()
+        except Exception:
+            pass
+
+        # Do NOT disable/grey out the rewrite tab anymore; the tab remains selectable.
+
+        # If the user is currently on the Rewrite tab, ensure the text box shows the latest selection.
+        if self.active_mode == 'rewrite' and hasattr(self, 'rewrite_tab') and self.rewrite_tab:
+            try:
+                # Force a UI refresh if the rewrite tab has a method for it
+                if hasattr(self.rewrite_tab, 'refresh_display'):
+                    self.rewrite_tab.refresh_display()
+            except Exception:
+                pass
+
+        # Update send button enabled state based on current active tab input content
+        try:
+            if self.active_mode == 'rewrite':
+                # disable send when rewrite selection box is empty
+                text_present = False
+                try:
+                    text_present = bool(self.rewrite_tab.get_selected_text())
+                except Exception:
+                    text_present = False
+                if hasattr(self, 'send_button') and self.send_button:
+                    self.send_button.setEnabled(text_present)
+            elif self.active_mode == 'write':
+                # disable send when action beats (prompt_input) is empty
+                beats_present = False
+                try:
+                    beats_present = bool(getattr(self, 'prompt_input') and self.prompt_input.toPlainText().strip())
+                except Exception:
+                    beats_present = False
+                if hasattr(self, 'send_button') and self.send_button:
+                    self.send_button.setEnabled(beats_present)
             else:
-                self.rewrite_tab.clear_selected_text()
+                # other modes: enable send button if present
+                if hasattr(self, 'send_button') and self.send_button:
+                    self.send_button.setEnabled(True)
+        except Exception:
+            pass
 
-        self.prompt_tab_widget.setTabEnabled(self.rewrite_tab_index, has_selection)
-
-        if not has_selection and self.active_mode == 'rewrite':
-            self.prompt_tab_widget.setCurrentIndex(self.write_tab_index)
+    def _on_prompt_input_changed(self):
+        """Called when the Beats prompt_input changes; update send button immediately."""
+        try:
+            if getattr(self, 'active_mode', '') != 'write':
+                return
+            has_beats = False
+            try:
+                has_beats = bool(getattr(self, 'prompt_input') and self.prompt_input.toPlainText().strip())
+            except Exception:
+                has_beats = False
+            if hasattr(self, 'send_button') and self.send_button:
+                self.send_button.setEnabled(has_beats)
+        except Exception:
+            pass
+            
     def on_prompt_selected(self, mode='write'):
         """Called when user selects a prompt from the dropdown for the given mode."""
         self.reset_temporary_config(mode)
