@@ -36,12 +36,31 @@ class ContextPanel(QWidget):
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderHidden(True)
+        # Allow multiple selection (Shift/Ctrl) and select by rows
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.project_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.project_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.project_tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.project_tree))
+        except Exception:
+            pass
         self.build_project_tree()
         self.project_tree.itemChanged.connect(self.propagate_check_state)
         splitter.addWidget(self.project_tree)
 
         self.compendium_tree = QTreeWidget()
         self.compendium_tree.setHeaderHidden(True)
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.compendium_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.compendium_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc2 = QShortcut(QKeySequence("Ctrl+A"), self.compendium_tree)
+            sc2.activated.connect(lambda: self._select_all_in_tree(self.compendium_tree))
+        except Exception:
+            pass
         self.build_compendium_tree()
         self.compendium_tree.itemChanged.connect(self.on_compendium_item_changed)
         splitter.addWidget(self.compendium_tree)
@@ -323,6 +342,16 @@ class ContextPanel(QWidget):
         """Connect to the EnhancedCompendiumWindow's compendium_updated signal."""
         if self.enhanced_window:
             self.enhanced_window.compendium_updated.connect(self.update_compendium_tree)
+
+    def _select_all_in_tree(self, tree_widget: QTreeWidget):
+        root = tree_widget.invisibleRootItem()
+        def recurse(parent):
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                if not child.isHidden():
+                    child.setSelected(True)
+                recurse(child)
+        recurse(root)
     
     @pyqtSlot(str)
     def update_compendium_tree(self, project_name):

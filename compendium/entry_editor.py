@@ -70,6 +70,16 @@ class EntryEditor(QWidget):
         self.relationships_list = QTreeWidget()
         self.relationships_list.setHeaderLabels(["Entry", "Relationship Type"])
         self.relationships_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        # Allow multi-selection and add Ctrl+A
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.relationships_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.relationships_list.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.relationships_list)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.relationships_list))
+        except Exception:
+            pass
         relationships_layout.addWidget(self.relationships_list)
         self.tabs.addTab(self.relationships_tab, "Relationships")
 
@@ -107,6 +117,19 @@ class EntryEditor(QWidget):
         self.alias_line_edit.clear()
         self.track_checkbox.setChecked(True)
         self.tabs.hide()
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
     # Minimal getter/setter for other code to remain compatible
     def get_description(self) -> str:

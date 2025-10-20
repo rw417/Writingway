@@ -34,6 +34,16 @@ class ProviderInfoDialog(QDialog):
         self.provider_tree = QTreeWidget()
         self.provider_tree.setHeaderLabels([_("Provider")])
         self.provider_tree.itemSelectionChanged.connect(self.provider_selected)
+        # Allow multi-selection and Ctrl+A for provider tree
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.provider_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.provider_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.provider_tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.provider_tree))
+        except Exception:
+            pass
         self.splitter.addWidget(self.provider_tree)
 
         right_widget = QWidget()
@@ -177,6 +187,19 @@ class ProviderInfoDialog(QDialog):
         for provider in all_providers:
             item = QTreeWidgetItem([provider])
             self.provider_tree.addTopLevelItem(item)
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
     def provider_selected(self):
         if self._updating_ui:

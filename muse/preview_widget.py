@@ -60,6 +60,17 @@ class PreviewWidget(QWidget):
         # Set tree to 1 column
         self.tree.setColumnCount(1)
         self.tree.setHeaderHidden(True)
+        # Multi-selection and Ctrl+A support
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
 
         # Shortcuts for zoom
         self.zoom_in_shortcut = QShortcut(QKeySequence("Ctrl+="), self)
@@ -207,6 +218,19 @@ class PreviewWidget(QWidget):
                 if content_length > 1000:
                     item.setExpanded(False)
             self.tree.resizeColumnToContents(0)
+
+        def _select_all_in_tree(self, tree_widget):
+            try:
+                root = tree_widget.invisibleRootItem()
+                def recurse(parent):
+                    for i in range(parent.childCount()):
+                        child = parent.child(i)
+                        if not child.isHidden():
+                            child.setSelected(True)
+                        recurse(child)
+                recurse(root)
+            except Exception:
+                pass
 
     def parse_conversation_payload(self):
         """Parse conversation payload into sections."""

@@ -55,6 +55,14 @@ class AICompendiumDialog(QDialog):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.show_tree_context_menu)
         self.tree.currentItemChanged.connect(self.on_item_changed)
+        # Enable Shift/Ctrl multi-selection and Ctrl+A select all
+        try:
+            self.tree.setSelectionMode(self.tree.ExtendedSelection)
+            self.tree.setSelectionBehavior(self.tree.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         self.splitter.addWidget(self.tree)
 
         # Right side: Two editors with labels
@@ -671,3 +679,16 @@ class AICompendiumDialog(QDialog):
         settings = QSettings("MyCompany", "WritingwayProject")
         settings.setValue("ai_compendium_dialog/geometry", self.saveGeometry())
         settings.setValue("ai_compendium_dialog/fontSize", self.font_size)
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass

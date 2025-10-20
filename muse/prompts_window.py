@@ -50,6 +50,16 @@ class PromptsWindow(QDialog):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.on_tree_context_menu)
         self.tree.itemClicked.connect(self.on_item_clicked)
+        # Allow multi-selection and Ctrl+A
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         tree_layout.addWidget(self.tree)
 
         self.splitter.addWidget(tree_widget)
@@ -172,6 +182,19 @@ class PromptsWindow(QDialog):
         self.update_provider_list()
 
         self.setLayout(layout)
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
     def on_model_changed(self, text):
         """Update internal selected model when the combo box selection changes."""

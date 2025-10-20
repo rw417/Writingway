@@ -6,6 +6,7 @@ import re
 from util.llm_markdown_to_html import markdown_to_html
 
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QColor, QPainter, QPaintEvent
 from PyQt5.QtWidgets import (
     QFrame,
@@ -30,6 +31,9 @@ class ChatBubbleWidget(QWidget):
     request_branch = pyqtSignal(str)
     request_prev_variant = pyqtSignal(str)
     request_next_variant = pyqtSignal(str)
+    request_copy = pyqtSignal(str)
+    request_edit_apply = pyqtSignal(str, str)
+    request_edit_cancel = pyqtSignal(str)
 
     def __init__(self, message: ChatMessage, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -88,32 +92,41 @@ class ChatBubbleWidget(QWidget):
         container.addWidget(bubble_frame)
 
         controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(6)
+        controls_layout.setSpacing(4)
         controls_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.prev_button = QPushButton()
-        self.prev_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/chevron-left.svg"))
-        self.prev_button.setToolTip("Previous response variant")
+        # Small control buttons under each bubble
+        def _make_small_button(icon_path, tooltip):
+            btn = QPushButton()
+            btn.setIcon(ThemeManager.get_tinted_icon(icon_path))
+            btn.setToolTip(tooltip)
+            btn.setFixedSize(20, 20)
+            btn.setIconSize(QSize(12, 12))
+            btn.setFlat(True)
+            return btn
+
+        self.prev_button = _make_small_button("assets/icons/chevron-left.svg", "Previous response variant")
         self.prev_button.clicked.connect(lambda: self.request_prev_variant.emit(self._message_id))
         controls_layout.addWidget(self.prev_button)
 
-        self.swipe_button = QPushButton()
-        self.swipe_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/refresh-cw.svg"))
-        self.swipe_button.setToolTip("Regenerate response")
+        self.swipe_button = _make_small_button("assets/icons/refresh-cw.svg", "Regenerate response")
         self.swipe_button.clicked.connect(lambda: self.request_swipe.emit(self._message_id))
         controls_layout.addWidget(self.swipe_button)
 
-        self.next_button = QPushButton()
-        self.next_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/chevron-right.svg"))
-        self.next_button.setToolTip("Next response variant")
+        self.next_button = _make_small_button("assets/icons/chevron-right.svg", "Next response variant")
         self.next_button.clicked.connect(lambda: self.request_next_variant.emit(self._message_id))
         controls_layout.addWidget(self.next_button)
 
-        controls_layout.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        # spacer
+        controls_layout.addSpacerItem(QSpacerItem(6, 6, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
-        self.branch_button = QPushButton()
-        self.branch_button.setIcon(ThemeManager.get_tinted_icon("assets/icons/git-branch.svg"))
-        self.branch_button.setToolTip("Branch conversation from this message")
+        # Copy button (available for all messages)
+        self.copy_button = _make_small_button("assets/icons/copy.svg", "Copy message")
+        self.copy_button.clicked.connect(lambda: self.request_copy.emit(self._message_id))
+        controls_layout.addWidget(self.copy_button)
+
+        # Branch button
+        self.branch_button = _make_small_button("assets/icons/git-branch.svg", "Branch conversation from this message")
         self.branch_button.clicked.connect(lambda: self.request_branch.emit(self._message_id))
         controls_layout.addWidget(self.branch_button)
 
@@ -123,6 +136,10 @@ class ChatBubbleWidget(QWidget):
             self.main_layout.addLayout(container)
             self.main_layout.addStretch()
         else:
+            # For user messages, add an Edit button
+            self.edit_button = _make_small_button("assets/icons/edit.svg", "Edit message")
+            self.edit_button.clicked.connect(self._start_edit)
+            controls_layout.addWidget(self.edit_button)
             self.main_layout.addLayout(container)
 
         self._bubble_frame = bubble_frame
@@ -187,6 +204,81 @@ class ChatBubbleWidget(QWidget):
         self._apply_styles()
         self._update_bubble_width()
         self.update_variant_controls()
+        # Ensure edit state is reset
+        if hasattr(self, '_editing') and self._editing:
+            self._cancel_edit()
+
+    # --- Editing support ---
+    def _start_edit(self):
+        if getattr(self, '_editing', False):
+            return
+        self._editing = True
+        # Replace content label with an editable QTextEdit inside the bubble frame
+        from PyQt5.QtWidgets import QTextEdit, QHBoxLayout
+
+        self._edit_box = QTextEdit()
+        self._edit_box.setPlainText(self._message.content)
+        self._edit_box.setFixedHeight(80)
+        # find bubble_frame layout and replace content_label widget
+        bubble_layout = self._bubble_frame.layout()
+        # remove existing content_label
+        bubble_layout.removeWidget(self.content_label)
+        self.content_label.setParent(None)
+        bubble_layout.insertWidget(0, self._edit_box)
+
+        # Add inline Cancel / Send small buttons to controls layout
+        self._apply_edit_button = QPushButton("Send")
+        self._apply_edit_button.setFixedSize(48, 20)
+        self._apply_edit_button.clicked.connect(self._apply_edit)
+        self._cancel_edit_button = QPushButton("Cancel")
+        self._cancel_edit_button.setFixedSize(48, 20)
+        self._cancel_edit_button.clicked.connect(self._cancel_edit)
+        # place them at the end of controls layout
+        self._controls_layout.addWidget(self._cancel_edit_button)
+        self._controls_layout.addWidget(self._apply_edit_button)
+
+    def _apply_edit(self):
+        if not getattr(self, '_editing', False):
+            return
+        new_text = self._edit_box.toPlainText()
+        # emit apply signal with id and new content
+        self.request_edit_apply.emit(self._message_id, new_text)
+        # exit edit mode
+        self._editing = False
+        # cleanup UI: remove edit box and restore label
+        bubble_layout = self._bubble_frame.layout()
+        bubble_layout.removeWidget(self._edit_box)
+        self._edit_box.setParent(None)
+        self._edit_box = None
+        bubble_layout.insertWidget(0, self.content_label)
+        # remove buttons
+        self._controls_layout.removeWidget(self._apply_edit_button)
+        self._apply_edit_button.setParent(None)
+        self._controls_layout.removeWidget(self._cancel_edit_button)
+        self._cancel_edit_button.setParent(None)
+        self._apply_edit_button = None
+        self._cancel_edit_button = None
+
+    def _cancel_edit(self):
+        if not getattr(self, '_editing', False):
+            return
+        self._editing = False
+        # cleanup and restore
+        bubble_layout = self._bubble_frame.layout()
+        bubble_layout.removeWidget(self._edit_box)
+        self._edit_box.setParent(None)
+        self._edit_box = None
+        bubble_layout.insertWidget(0, self.content_label)
+        # remove buttons
+        try:
+            self._controls_layout.removeWidget(self._apply_edit_button)
+            self._apply_edit_button.setParent(None)
+            self._controls_layout.removeWidget(self._cancel_edit_button)
+            self._cancel_edit_button.setParent(None)
+        except Exception:
+            pass
+        # emit cancel if needed
+        self.request_edit_cancel.emit(self._message_id)
 
     def update_variant_controls(self):
         if self._role != "assistant":
@@ -245,6 +337,9 @@ class ChatListWidget(QListWidget):
     prev_variant_requested = pyqtSignal(str)
     next_variant_requested = pyqtSignal(str)
     branch_requested = pyqtSignal(str)
+    copy_requested = pyqtSignal(str)
+    edit_apply_requested = pyqtSignal(str, str)
+    edit_cancel_requested = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -280,6 +375,13 @@ class ChatListWidget(QListWidget):
             widget.request_prev_variant.connect(self._emit_prev_variant)
             widget.request_next_variant.connect(self._emit_next_variant)
             widget.request_branch.connect(self._emit_branch)
+            # Forward copy/edit signals from the bubble widget
+            widget.request_copy.connect(self._emit_copy)
+            widget.request_edit_apply.connect(self._emit_edit_apply)
+            widget.request_edit_cancel.connect(self._emit_edit_cancel)
+            # Ensure the widget's geometry is up-to-date before taking its size hint
+            widget.updateGeometry()
+            widget.adjustSize()
             item.setSizeHint(widget.sizeHint())
             self.addItem(item)
             self.setItemWidget(item, widget)
@@ -288,10 +390,28 @@ class ChatListWidget(QListWidget):
             widget = self.itemWidget(item)
             if isinstance(widget, ChatBubbleWidget):
                 widget.bind_message(message)
+                # Recompute the size hint after the widget updates its layout/content
+                widget.updateGeometry()
+                widget.adjustSize()
                 item.setSizeHint(widget.sizeHint())
         if select:
             self.setCurrentItem(item)
         self.scrollToBottom()
+
+    def resizeEvent(self, event):
+        """When the list is resized, recompute each item's size hint so heights
+        update to match the new available width (fixes large gaps when resizing).
+        """
+        super().resizeEvent(event)
+        # Iterate items and refresh their size hints based on the widget's current layout
+        for item in list(self._items.values()):
+            widget = self.itemWidget(item)
+            if widget:
+                widget.updateGeometry()
+                widget.adjustSize()
+                item.setSizeHint(widget.sizeHint())
+        # Trigger a layout update
+        self.doItemsLayout()
 
     def remove_message(self, message_id: str):
         item = self._items.pop(message_id, None)
@@ -315,6 +435,15 @@ class ChatListWidget(QListWidget):
 
     def _emit_branch(self, message_id: str):
         self.branch_requested.emit(message_id)
+
+    def _emit_copy(self, message_id: str):
+        self.copy_requested.emit(message_id)
+
+    def _emit_edit_apply(self, message_id: str, new_text: str):
+        self.edit_apply_requested.emit(message_id, new_text)
+
+    def _emit_edit_cancel(self, message_id: str):
+        self.edit_cancel_requested.emit(message_id)
 
     def populate(self, messages: Iterable[ChatMessage]):
         self.clear_messages()

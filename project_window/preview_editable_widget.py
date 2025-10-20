@@ -57,6 +57,16 @@ class PreviewEditableWidget(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
         self.tree.setRootIsDecorated(False)
+        # Allow Shift/Ctrl multi-selection and provide Ctrl+A select all
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         # Prefer per-pixel scrolling and a smaller single-step to avoid per-item jumps
         try:
             self.tree.setVerticalScrollMode(QTreeWidget.ScrollPerPixel)
@@ -239,6 +249,19 @@ class PreviewEditableWidget(QWidget):
             messages.append({"role": "user", "content": ""})
 
         messages[message_index]["role"] = new_role
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
         header_label = self.message_widgets[message_index].get("header_label")
         if header_label and new_role:

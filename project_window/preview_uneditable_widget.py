@@ -40,6 +40,16 @@ class PreviewUneditableWidget(QWidget):
             self.tree.verticalScrollBar().setSingleStep(12)
         except Exception:
             pass
+        # Allow multi-selection and Ctrl+A
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         layout.addWidget(self.tree)
         
         # Token count label
@@ -135,3 +145,16 @@ class PreviewUneditableWidget(QWidget):
             self.token_label.setText(_("Token Count: {}").format(total_tokens))
         except Exception as e:
             self.token_label.setText(_("Token Count: Unknown"))
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass

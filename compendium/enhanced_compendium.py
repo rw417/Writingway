@@ -313,6 +313,16 @@ class EnhancedCompendiumWindow(QMainWindow):
         self.tree.setHeaderLabel(_("Compendium"))
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         enable_tree_hand_cursor(self.tree)
+        # Multi-selection and Ctrl+A support
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         tree_layout.addWidget(self.tree)
         self.main_splitter.addWidget(self.tree_widget)
     
@@ -496,6 +506,20 @@ class EnhancedCompendiumWindow(QMainWindow):
                 self._app_filter_installed = False
         except Exception:
             self._app_filter_installed = False
+
+    def _select_all_in_tree(self, tree_widget):
+        """Select all visible items in the provided QTreeWidget."""
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
     
     def show_tree_context_menu(self, pos):
         """Display context menu for the tree view."""

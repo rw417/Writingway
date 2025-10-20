@@ -115,6 +115,16 @@ class EmbeddedPromptsPanel(QWidget):
         self.tree.setIndentation(5)
         self.tree.currentItemChanged.connect(self._on_current_item_changed)
         enable_tree_hand_cursor(self.tree)
+        # Allow multi-selection and Ctrl+A
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.tree))
+        except Exception:
+            pass
         
         tree_layout.addWidget(self.tree)
         self.splitter.addWidget(self.tree_widget)
@@ -188,6 +198,19 @@ class EmbeddedPromptsPanel(QWidget):
 
     def _editor_resize_mouse_release(self, event):
         self._editor_resizing = False
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
     def _setup_parameters_panel(self) -> None:
         """Set up the parameters panel for provider and model settings."""

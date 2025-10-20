@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from html import escape
 from typing import List
+import logging
 
 
 def _escape_html(text: str) -> str:
@@ -213,6 +214,15 @@ if _HAS_MARKDOWN:
             return _legacy_markdown_to_html(text)
 else:
     markdown_to_html = _legacy_markdown_to_html
+
+# Reduce verbose logging from the third-party 'MARKDOWN' logger which can
+# spam DEBUG messages when extensions are loaded. Set it to WARNING level so
+# normal usage doesn't fill the console with extension load traces.
+try:
+    logging.getLogger('MARKDOWN').setLevel(logging.WARNING)
+except Exception:
+    # If logging isn't configured or the logger doesn't exist yet, ignore.
+    pass
 
 
 __all__ = ["markdown_to_html"]

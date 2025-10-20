@@ -163,11 +163,18 @@ class WorkshopWindow(QDialog):
 
         # Chat log (display area)
         self.chat_list = ChatListWidget(self)
-        self.update_chat_list_font()
+        # Connect new copy/edit signals
         self.chat_list.swipe_requested.connect(self.handle_swipe_request)
         self.chat_list.prev_variant_requested.connect(self.handle_prev_variant)
         self.chat_list.next_variant_requested.connect(self.handle_next_variant)
         self.chat_list.branch_requested.connect(self.handle_branch_request)
+        self.chat_list.copy_requested.connect(self.handle_copy_message)
+        self.chat_list.edit_apply_requested.connect(self.handle_edit_apply)
+        self.chat_list.edit_cancel_requested.connect(self.handle_edit_cancel)
+        # The widget will emit copy/edit signals via the ChatBubbleWidget which are proxied by ChatListWidget
+        # We'll attach handlers after populating widgets in add_or_update_message via signal connections in ChatListWidget
+        self.update_chat_list_font()
+        # Note: ChatListWidget will route per-bubble signals to WorkshopWindow by emitting the corresponding signals
         chat_layout.addWidget(self.chat_list)
 
         # Splitter for input and context panel
@@ -606,6 +613,34 @@ class WorkshopWindow(QDialog):
         message.set_content(message.content + chunk)
         self.chat_list.add_or_update_message(message)
         QApplication.processEvents()
+
+    # --- Copy / Edit handlers ---
+    def handle_copy_message(self, message_id: str):
+        message = self.get_message_by_id(message_id)
+        if not message:
+            return
+        content = message.content
+        clipboard = QApplication.clipboard()
+        clipboard.setText(content)
+
+    def handle_edit_apply(self, message_id: str, new_text: str):
+        # Find the message and its index
+        for idx, msg in enumerate(self.conversation_history):
+            if msg.id == message_id and msg.role == 'user':
+                # Replace content of the message
+                msg.set_content(new_text)
+                msg.metadata['augmented_content'] = new_text
+                # Truncate all messages that come after this message
+                self.conversation_history = self.conversation_history[: idx + 1]
+                self.conversations[self.current_conversation] = self.conversation_history
+                # Refresh chat list UI
+                self.chat_list.populate(self.conversation_history)
+                self.save_conversations()
+                return
+
+    def handle_edit_cancel(self, message_id: str):
+        # Nothing to do at controller level; the bubble widget already restores UI
+        return
 
     def on_streaming_finished(self):
         """Handle completion of streaming."""

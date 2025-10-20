@@ -175,6 +175,16 @@ class SearchReplacePanel(QWidget):
         self.results_tree.setFocusPolicy(Qt.StrongFocus)
         self.results_tree.keyPressEvent = self.keyPressEvent
         self.results_tree.setIndentation(2)  # Reduced indentation for left-justified appearance
+        # Allow multi-selection and Ctrl+A
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView, QShortcut
+            from PyQt5.QtGui import QKeySequence
+            self.results_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.results_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+            sc = QShortcut(QKeySequence("Ctrl+A"), self.results_tree)
+            sc.activated.connect(lambda: self._select_all_in_tree(self.results_tree))
+        except Exception:
+            pass
 
         layout.addLayout(search_layout)
         layout.addWidget(self.replace_container)
@@ -185,6 +195,19 @@ class SearchReplacePanel(QWidget):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self.on_search)
+
+    def _select_all_in_tree(self, tree_widget):
+        try:
+            root = tree_widget.invisibleRootItem()
+            def recurse(parent):
+                for i in range(parent.childCount()):
+                    child = parent.child(i)
+                    if not child.isHidden():
+                        child.setSelected(True)
+                    recurse(child)
+            recurse(root)
+        except Exception:
+            pass
 
     def keyPressEvent(self, event):
         """Handle keyboard navigation for the results tree."""

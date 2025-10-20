@@ -33,7 +33,6 @@ class ProjectTreeWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.tree)
         layout.setContentsMargins(0, 0, 0, 0)
-
         self.tree.setHeaderLabels([_("Name"), _("Status")])
         self.tree.setColumnCount(2)
         self.tree.setIndentation(5)  # Reduced indentation for left-justified appearance
@@ -45,6 +44,21 @@ class ProjectTreeWidget(QWidget):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.show_context_menu)
         self.tree.currentItemChanged.connect(self.controller.tree_item_changed)
+        # Allow multiple selection with Shift/Ctrl and make rows selectable
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView
+            self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        except Exception:
+            pass
+        # Add Ctrl+A shortcut to select all items in the tree
+        try:
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            select_all_sc = QShortcut(QKeySequence("Ctrl+A"), self.tree)
+            select_all_sc.activated.connect(self._select_all_items)
+        except Exception:
+            pass
         self.populate()
 
     def populate(self):
@@ -181,6 +195,17 @@ class ProjectTreeWidget(QWidget):
                 for english_status, translated_status in self.STATUS_MAP.items():
                     status_menu.addAction(translated_status, lambda s=english_status: self.controller.set_scene_status(item, s))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _select_all_items(self):
+        # Select all visible/non-hidden items
+        def recurse_select(parent):
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                if not child.isHidden():
+                    child.setSelected(True)
+                recurse_select(child)
+        root = self.tree.invisibleRootItem()
+        recurse_select(root)
 
     def show_error_message(self, message):
         """Display an error message to the user."""
